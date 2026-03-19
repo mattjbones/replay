@@ -1,0 +1,20 @@
+[schedule]
+sync_interval_minutes = 5
+daily_reminder_time = "17:00"
+weekly_reminder_day = "Friday"
+
+[ttl]
+hot_minutes = 5
+warm_minutes = 60
+cold_minutes = 1440
+
+[github]
+# username = "your-github-username"
+
+[slack]
+# user_id = "U..."
+# ignored_channels = ["github-prs", "graphite-*"]
+
+[llm]
+enabled = false
+# model = "claude-haiku-4-5-20251001"

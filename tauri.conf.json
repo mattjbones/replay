@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicoe/tauri/dev/crates/tauri-utils/schema.json",
+  "productName": "Recap",
+  "version": "0.1.0",
+  "identifier": "com.recap.app",
+  "build": {
+    "frontendDist": "./ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    },
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
+}

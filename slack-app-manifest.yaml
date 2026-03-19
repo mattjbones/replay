@@ -1,0 +1,21 @@
+display_information:
+  name: Recap (Personal)
+  description: Personal activity digest
+  background_color: "#1a1a2e"
+features:
+  bot_user:
+    display_name: Recap
+    always_online: false
+oauth_config:
+  scopes:
+    user:
+      - search:read
+      - channels:history
+      - channels:read
+      - users:read
+      - im:history
+      - mpim:history
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
