@@ -16,13 +16,45 @@ pub struct GitHubIntegration {
 }
 
 impl GitHubIntegration {
-    pub fn new(config: AppConfig) -> Self {
+    /// Try to resolve the GitHub username: config → `gh api user` → fail.
+    fn resolve_username(config: &AppConfig) -> Option<String> {
+        if let Some(ref u) = config.github.username {
+            if !u.is_empty() {
+                return Some(u.clone());
+            }
+        }
+        // Fall back to gh CLI
+        std::process::Command::new("gh")
+            .args(["api", "user", "--jq", ".login"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if s.is_empty() { None } else { Some(s) }
+            })
+    }
+
+    pub fn new(config: AppConfig) -> Option<Self> {
         let token = AuthManager::get_github_token()
             .ok()
             .flatten()
             .unwrap_or_default();
 
-        let username = config.github.username.unwrap_or_default();
+        if token.is_empty() {
+            tracing::warn!("github: no token available, skipping");
+            return None;
+        }
+
+        let username = match Self::resolve_username(&config) {
+            Some(u) => u,
+            None => {
+                tracing::warn!("github: no username configured and `gh api user` failed, skipping");
+                return None;
+            }
+        };
+
+        tracing::info!("github: using username '{username}'");
 
         use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 
@@ -43,11 +75,11 @@ impl GitHubIntegration {
             .build()
             .expect("failed to build reqwest client");
 
-        Self {
+        Some(Self {
             client,
             token,
             username,
-        }
+        })
     }
 }
 

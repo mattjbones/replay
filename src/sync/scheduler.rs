@@ -40,10 +40,8 @@ impl SyncScheduler {
 
         // Each integration constructor retrieves its own token internally,
         // but we only instantiate if a token is actually available.
-        if AuthManager::get_github_token().ok().flatten().is_some() {
-            integrations.push(Box::new(
-                crate::integrations::github::GitHubIntegration::new(config.clone()),
-            ));
+        if let Some(gh) = crate::integrations::github::GitHubIntegration::new(config.clone()) {
+            integrations.push(Box::new(gh));
         }
 
         if AuthManager::get_token(&Source::Linear).ok().flatten().is_some() {

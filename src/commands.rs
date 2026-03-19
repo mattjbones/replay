@@ -5,7 +5,7 @@ use tauri::State;
 
 use crate::auth::{AuthManager, AuthStatus};
 use crate::config::AppConfig;
-use crate::db::{get_activities_for_range, get_cached_summary};
+use crate::db::{get_activities_for_range, get_cached_summary, set_cached_summary};
 use crate::db::Database;
 use crate::digest::build_digest;
 use crate::models::*;
@@ -138,12 +138,25 @@ pub async fn get_llm_summary(
         return Ok(None);
     }
 
+    // Check that the Anthropic API key is available.
+    let has_key = crate::auth::AuthManager::get_anthropic_key()
+        .ok()
+        .flatten()
+        .is_some();
+    if !has_key {
+        return Ok(None);
+    }
+
     // Fetch activities for the range.
     let activities =
         get_activities_for_range(&state.db, start, end).map_err(|e: rusqlite::Error| e.to_string())?;
-    let _digest = build_digest(activities, p);
+    let digest = build_digest(activities, p);
 
-    // TODO: Call Claude API with the digest to generate a summary.
-    // For now, return None until the LLM integration is implemented.
-    Ok(None)
+    // Call Claude API to generate a summary.
+    let summary = crate::llm::generate_summary(&state.config.llm, &digest).await?;
+
+    // Cache the result.
+    set_cached_summary(&state.db, &cache_key, &summary);
+
+    Ok(Some(summary))
 }

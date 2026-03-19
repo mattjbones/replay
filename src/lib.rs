@@ -4,7 +4,9 @@ pub mod config;
 pub mod db;
 pub mod digest;
 pub mod integrations;
+pub mod llm;
 pub mod models;
+pub mod notifications;
 pub mod sync;
 pub mod tray;
 
@@ -38,6 +40,12 @@ pub fn run() {
                 let scheduler = sync::SyncScheduler::new(sync_db, sync_config);
                 scheduler.start().await;
             });
+
+            // Start daily reminder notifications.
+            let reminder_handle = app.handle().clone();
+            let reminder_db = db.clone();
+            let reminder_config = config.clone();
+            notifications::start_daily_reminder(reminder_handle, reminder_db, reminder_config);
 
             Ok(())
         })
