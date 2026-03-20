@@ -198,6 +198,12 @@ pub struct SlackConfig {
     pub user_id: Option<String>,
     #[serde(default)]
     pub ignored_channels: Vec<String>,
+    /// Slack app client ID (needed for token rotation/refresh).
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// Slack app client secret (needed for token rotation/refresh).
+    #[serde(default)]
+    pub client_secret: Option<String>,
 }
 
 impl Default for SlackConfig {
@@ -205,6 +211,8 @@ impl Default for SlackConfig {
         Self {
             user_id: None,
             ignored_channels: Vec::new(),
+            client_id: None,
+            client_secret: None,
         }
     }
 }

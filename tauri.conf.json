@@ -8,7 +8,20 @@
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [],
+    "windows": [
+      {
+        "label": "main",
+        "title": "Recap",
+        "url": "index.html",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "decorations": true,
+        "resizable": true,
+        "center": true
+      }
+    ],
     "security": {
       "csp": null
     },

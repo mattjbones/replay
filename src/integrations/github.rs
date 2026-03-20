@@ -218,6 +218,26 @@ impl Integration for GitHubIntegration {
             }
         }
 
+        // Supplement with authored PRs (catches merges by Graphite, bots, etc.)
+        let pr_activities = self.fetch_authored_prs(since_dt).await.unwrap_or_else(|e| {
+            tracing::warn!("github: failed to fetch authored PRs: {e}");
+            Vec::new()
+        });
+
+        // Deduplicate: only add PR activities whose source_id we haven't seen
+        let existing_ids: std::collections::HashSet<String> = all_activities
+            .iter()
+            .map(|a| a.source_id.clone())
+            .collect();
+        for activity in pr_activities {
+            if !existing_ids.contains(&activity.source_id) {
+                if latest_cursor.is_none() || Some(activity.occurred_at.to_rfc3339()) > latest_cursor {
+                    latest_cursor = Some(activity.occurred_at.to_rfc3339());
+                }
+                all_activities.push(activity);
+            }
+        }
+
         let cursor = latest_cursor.unwrap_or_else(|| {
             since
                 .map(|s| s.to_string())
@@ -228,6 +248,240 @@ impl Integration for GitHubIntegration {
     }
 }
 
+impl GitHubIntegration {
+    /// Fetch PRs authored by the user via the Search API.
+    /// This catches PRs merged by Graphite or other bots that don't appear in the events feed.
+    async fn fetch_authored_prs(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<Activity>, IntegrationError> {
+        let since_str = since
+            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string())
+            .unwrap_or_else(|| {
+                // On first sync (no cursor), look back 30 days to capture recent history
+                (Utc::now() - chrono::Duration::days(30))
+                    .format("%Y-%m-%dT%H:%M:%S")
+                    .to_string()
+            });
+
+        let query = format!(
+            "author:{} type:pr updated:>{}",
+            self.username, since_str
+        );
+        let url = format!(
+            "https://api.github.com/search/issues?q={}&sort=updated&order=desc&per_page=100",
+            urlencoding::encode(&query)
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| IntegrationError::Network(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(IntegrationError::Network(format!(
+                "GitHub search returned {body}"
+            )));
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| IntegrationError::Parse(e.to_string()))?;
+
+        let items = json["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        // First pass: parse items and identify which closed PRs need Graphite checks
+        struct PrCandidate {
+            number: u64,
+            title: String,
+            html_url: String,
+            repo_name: String,
+            updated_str: String,
+            merged_at_present: bool,
+            state: String,
+        }
+
+        let mut candidates: Vec<PrCandidate> = Vec::new();
+        for item in &items {
+            let number = item["number"].as_u64().unwrap_or(0);
+            let title = item["title"].as_str().unwrap_or("Untitled PR").to_string();
+            let html_url = item["html_url"].as_str().unwrap_or_default().to_string();
+            let state = item["state"].as_str().unwrap_or_default().to_string();
+            let repo_url = item["repository_url"].as_str().unwrap_or_default();
+            let repo_name = repo_url.rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+            let updated_str = item["updated_at"].as_str().unwrap_or_default().to_string();
+            let merged_at_present = item["pull_request"]
+                .get("merged_at")
+                .and_then(|v| v.as_str())
+                .is_some();
+
+            candidates.push(PrCandidate { number, title, html_url, repo_name, updated_str, merged_at_present, state });
+        }
+
+        // Second pass: check all closed PRs for Graphite merges in parallel
+        let closed_prs: Vec<&PrCandidate> = candidates.iter()
+            .filter(|c| c.state == "closed" && !c.merged_at_present)
+            .collect();
+
+        let mut graphite_merged: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+        if !closed_prs.is_empty() {
+            tracing::info!("github: checking {} closed PRs for Graphite merges in parallel", closed_prs.len());
+            let mut join_set = tokio::task::JoinSet::new();
+            for c in &closed_prs {
+                let client = self.client.clone();
+                let repo = c.repo_name.clone();
+                let number = c.number;
+                join_set.spawn(async move {
+                    let merged = check_graphite_merge_static(&client, &repo, number).await;
+                    (number, merged)
+                });
+            }
+            while let Some(result) = join_set.join_next().await {
+                if let Ok((number, true)) = result {
+                    tracing::info!("github: PR #{number} detected as Graphite merge");
+                    graphite_merged.insert(number);
+                }
+            }
+        }
+
+        // Third pass: build activities
+        let mut activities = Vec::new();
+        for c in &candidates {
+            let kind = if c.merged_at_present {
+                ActivityKind::PrMerged
+            } else if c.state == "open" {
+                ActivityKind::PrOpened
+            } else if c.state == "closed" && graphite_merged.contains(&c.number) {
+                ActivityKind::PrMerged
+            } else {
+                continue;
+            };
+
+            let occurred_at: DateTime<Utc> = c.updated_str
+                .parse()
+                .unwrap_or_else(|_| Utc::now());
+
+            let source_id = format!("pr:{}:{}", c.repo_name, c.number);
+            let (cc_type, cc_scope) = parse_conventional_commit(&c.title);
+
+            let mut activity = Activity::new(
+                Source::GitHub,
+                source_id,
+                kind,
+                c.title.clone(),
+                c.html_url.clone(),
+                occurred_at,
+            );
+            activity.project = Some(c.repo_name.clone());
+            activity.metadata = serde_json::json!({
+                "pr_number": c.number,
+                "cc_type": cc_type,
+                "cc_scope": cc_scope,
+            });
+
+            activities.push(activity);
+        }
+
+        tracing::info!("github: found {} authored PRs via search", activities.len());
+        Ok(activities)
+    }
+
+    /// Check if a closed PR was actually merged via Graphite's merge queue.
+    /// Graphite closes the PR (without setting merged=true) and deletes the head branch.
+    /// If the head branch is gone (404), it was merged.
+    // Instance method kept for API compatibility, delegates to static
+    #[allow(dead_code)]
+    async fn check_graphite_merge(&self, repo: &str, pr_number: u64) -> bool {
+        check_graphite_merge_static(&self.client, repo, pr_number).await
+    }
+}
+
+/// Check if a closed PR was merged via Graphite's merge queue.
+/// Static function so it can be spawned into a JoinSet for parallel execution.
+async fn check_graphite_merge_static(client: &reqwest::Client, repo: &str, pr_number: u64) -> bool {
+    tracing::debug!("github: checking if PR #{pr_number} in {repo} was Graphite-merged");
+    let url = format!("https://api.github.com/repos/{repo}/pulls/{pr_number}");
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("github: failed to fetch PR #{pr_number}: {e}");
+            return false;
+        }
+    };
+    if !resp.status().is_success() {
+        tracing::warn!("github: PR #{pr_number} returned {}", resp.status());
+        return false;
+    }
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(_) => return false,
+    };
+
+    // If the Pulls API says merged, trust it
+    if json.get("merged").and_then(|v| v.as_bool()) == Some(true) {
+        tracing::info!("github: PR #{pr_number} — Pulls API says merged=true");
+        return true;
+    }
+
+    // Check if head branch was deleted (Graphite deletes after merge)
+    let head_ref = match json["head"]["ref"].as_str() {
+        Some(r) => r,
+        None => return false,
+    };
+    let branch_url = format!("https://api.github.com/repos/{repo}/git/ref/heads/{head_ref}");
+    let branch_deleted = match client.get(&branch_url).send().await {
+        Ok(r) => r.status() == reqwest::StatusCode::NOT_FOUND,
+        Err(_) => false,
+    };
+    tracing::info!(
+        "github: PR #{pr_number} — merged=false, branch '{head_ref}' deleted={branch_deleted}",
+    );
+    branch_deleted
+}
+
+/// Parse a conventional commit prefix from a PR title.
+/// Returns (type, scope) e.g. "feat(work): title" → ("feat", "work")
+fn parse_conventional_commit(title: &str) -> (Option<String>, Option<String>) {
+    // Match: type(scope): ... OR type: ...
+    // Types: feat, fix, chore, perf, refactor, docs, test, ci, build, style, revert
+    let title_trimmed = title.trim();
+    let valid_types = [
+        "feat", "fix", "chore", "perf", "refactor", "docs",
+        "test", "ci", "build", "style", "revert",
+    ];
+
+    // Try type(scope): pattern
+    if let Some(colon_pos) = title_trimmed.find(':') {
+        let prefix = &title_trimmed[..colon_pos];
+        if let Some(paren_start) = prefix.find('(') {
+            let cc_type = &prefix[..paren_start];
+            if valid_types.contains(&cc_type.to_lowercase().as_str()) {
+                let scope = prefix[paren_start + 1..].trim_end_matches(')');
+                return (
+                    Some(cc_type.to_lowercase()),
+                    if scope.is_empty() { None } else { Some(scope.to_string()) },
+                );
+            }
+        } else {
+            // Try type: pattern (no scope)
+            let cc_type = prefix.trim();
+            if valid_types.contains(&cc_type.to_lowercase().as_str()) {
+                return (Some(cc_type.to_lowercase()), None);
+            }
+        }
+    }
+
+    (None, None)
+}
+
 // ---------------------------------------------------------------------------
 // Event parsing helpers
 // ---------------------------------------------------------------------------
@@ -235,9 +489,8 @@ impl Integration for GitHubIntegration {
 fn parse_event(event: &GitHubEvent, occurred_at: DateTime<Utc>) -> Vec<Activity> {
     match event.event_type.as_str() {
         "PushEvent" => parse_push_event(event, occurred_at),
-        "PullRequestEvent" => parse_pull_request_event(event, occurred_at)
-            .into_iter()
-            .collect(),
+        // PullRequestEvent skipped — Search API (fetch_authored_prs) is the
+        // single source of truth for PR status, including Graphite merges.
         "PullRequestReviewEvent" => parse_pull_request_review_event(event, occurred_at)
             .into_iter()
             .collect(),
@@ -296,54 +549,7 @@ fn parse_push_event(event: &GitHubEvent, occurred_at: DateTime<Utc>) -> Vec<Acti
     vec![activity]
 }
 
-fn parse_pull_request_event(
-    event: &GitHubEvent,
-    occurred_at: DateTime<Utc>,
-) -> Option<Activity> {
-    let payload = &event.payload;
-    let action = payload
-        .get("action")
-        .and_then(|a| a.as_str())
-        .unwrap_or("");
-    let pr = payload.get("pull_request")?;
-
-    let title = pr
-        .get("title")
-        .and_then(|t| t.as_str())
-        .unwrap_or("Untitled PR")
-        .to_string();
-    let url = pr
-        .get("html_url")
-        .and_then(|u| u.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let kind = match action {
-        "opened" | "reopened" => ActivityKind::PrOpened,
-        "closed" => {
-            let merged = pr.get("merged").and_then(|m| m.as_bool()).unwrap_or(false);
-            if merged {
-                ActivityKind::PrMerged
-            } else {
-                // Closed without merge -- not tracked.
-                return None;
-            }
-        }
-        _ => return None,
-    };
-
-    let mut activity = Activity::new(
-        Source::GitHub,
-        event.id.clone(),
-        kind,
-        title,
-        url,
-        occurred_at,
-    );
-    activity.project = Some(event.repo.name.clone());
-
-    Some(activity)
-}
+// parse_pull_request_event removed — Search API handles all PR status
 
 fn parse_pull_request_review_event(
     event: &GitHubEvent,
@@ -352,16 +558,32 @@ fn parse_pull_request_review_event(
     let payload = &event.payload;
     let pr = payload.get("pull_request")?;
 
+    let pr_number = payload
+        .get("number")
+        .and_then(|n| n.as_u64())
+        .or_else(|| pr.get("number").and_then(|n| n.as_u64()));
+
     let pr_title = pr
         .get("title")
         .and_then(|t| t.as_str())
-        .unwrap_or("Untitled PR");
-    let title = format!("Reviewed: {pr_title}");
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            match pr_number {
+                Some(n) => format!("PR #{n}", ),
+                None => "a PR".to_string(),
+            }
+        });
+    let title = format!("Reviewed: {pr_title} in {}", event.repo.name);
     let url = pr
         .get("html_url")
         .and_then(|u| u.as_str())
-        .unwrap_or("")
-        .to_string();
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            match pr_number {
+                Some(n) => format!("https://github.com/{}/pull/{n}", event.repo.name),
+                None => format!("https://github.com/{}", event.repo.name),
+            }
+        });
 
     let review_state = payload
         .get("review")

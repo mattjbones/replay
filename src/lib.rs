@@ -12,26 +12,51 @@ pub mod tray;
 
 use std::sync::Arc;
 
+use tauri::Manager;
 use commands::AppState;
 
 pub fn run() {
     tracing_subscriber::fmt::init();
 
+    tracing::info!("recap starting...");
+
     let config = config::AppConfig::load();
+    tracing::info!("config loaded from {:?}", config::AppConfig::config_dir());
+
+    let db_path = config::AppConfig::db_path();
+    tracing::info!("opening database at {:?}", db_path);
     let db = Arc::new(
-        db::Database::new(&config::AppConfig::db_path()).expect("failed to open database"),
+        db::Database::new(&db_path).expect("failed to open database"),
     );
+    tracing::info!("database opened");
 
     let state = AppState {
         db: db.clone(),
         config: config.clone(),
     };
 
-    tauri::Builder::default()
+    tracing::info!("building tauri app...");
+
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .manage(state)
         .setup(move |app| {
+            tracing::info!("tauri setup callback running");
+
+            #[cfg(target_os = "macos")]
+            {
+                tracing::info!("setting macOS activation policy to Regular");
+                app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            }
+
+            if let Some(window) = app.get_webview_window("main") {
+                tracing::info!("main window ready");
+                let _ = window.set_focus();
+            }
+
+            tracing::info!("setting up tray...");
             tray::setup_tray(app)?;
+            tracing::info!("tray setup complete");
 
             // Start background sync.
             let sync_db = db.clone();
@@ -47,17 +72,30 @@ pub fn run() {
             let reminder_config = config.clone();
             notifications::start_daily_reminder(reminder_handle, reminder_db, reminder_config);
 
+            tracing::info!("setup complete");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_digest,
             commands::get_auth_status,
             commands::save_token,
+            commands::save_slack_refresh_token,
+            commands::exchange_slack_refresh_token,
+            commands::clear_cache,
             commands::trigger_sync,
             commands::get_config,
             commands::update_config,
             commands::get_llm_summary,
-        ])
+            commands::get_chart_data,
+            commands::get_feature_breakdown,
+            commands::get_standup,
+        ]);
+
+    tracing::info!("calling tauri::Builder::run()...");
+
+    builder
         .run(tauri::generate_context!())
         .expect("error while running recap");
+
+    tracing::info!("tauri app exited");
 }

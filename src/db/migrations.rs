@@ -35,6 +35,11 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_activities_source_occurred_at
             ON activities(source, occurred_at);
+
+        CREATE TABLE IF NOT EXISTS tokens (
+            key     TEXT PRIMARY KEY,
+            value   TEXT NOT NULL
+        );
         ",
     )
 }

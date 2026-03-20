@@ -1,1 +1,317 @@
-<\!DOCTYPE html><html><body>Recap</body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recap</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+  <!-- Sticky Header -->
+  <header id="header" class="header">
+    <div class="header-left">
+      <h1 class="logo">Recap</h1>
+      <nav id="nav-tabs" class="nav-tabs">
+        <button class="nav-tab active" data-view="overview">Overview</button>
+        <button class="nav-tab" data-view="github"><svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg> GitHub</button>
+        <button class="nav-tab" data-view="linear"><svg class="nav-icon" width="16" height="16" viewBox="0 0 100 100" fill="currentColor"><path d="M1.22541 61.5228c-.97401-1.6673-.97401-3.7212 0-5.3884L41.9398 1.13446c.974-1.66729 2.8055-2.69436 4.7535-2.69436h81.429c1.948 0 3.779 1.02707 4.753 2.69436L173.59 56.1344c.974 1.6672.974 3.7211 0 5.3884L132.876 116.523c-.974 1.667-2.805 2.694-4.753 2.694H46.6933c-1.948 0-3.7795-1.027-4.7535-2.694L1.22541 61.5228z" transform="scale(0.16)"/></svg> Linear</button>
+        <!-- Slack disabled — requires full OAuth -->
+      </nav>
+    </div>
+    <div class="header-right">
+      <div class="date-nav">
+        <button id="date-prev" class="btn-nav" title="Previous">&lsaquo;</button>
+        <span id="header-date" class="header-date"></span>
+        <button id="date-next" class="btn-nav" title="Next">&rsaquo;</button>
+        <button id="date-today" class="btn btn-tiny" style="margin-left:6px">Today</button>
+      </div>
+      <nav id="tab-bar" class="tab-bar">
+        <button class="tab active" data-period="day">Day</button>
+        <button class="tab" data-period="week">Week</button>
+        <button class="tab" data-period="month">Month</button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Action Bar -->
+  <div id="action-bar" class="action-bar">
+    <button id="action-standup" class="btn btn-action">&#x1f4cb; Generate Standup</button>
+    <button id="action-settings" class="btn btn-action">&#x2699; Settings</button>
+    <div class="action-bar-spacer"></div>
+    <button id="sync-btn" class="btn btn-action">&#x21bb; Sync</button>
+  </div>
+
+  <!-- Auth Banner (collapsible) -->
+  <div id="auth-banner" class="auth-banner" style="display:none">
+    <span id="auth-banner-text" class="auth-banner-text"></span>
+    <button id="auth-banner-btn" class="btn btn-small">Settings</button>
+  </div>
+
+  <!-- Main Content Area -->
+  <main id="main" class="main">
+
+    <!-- View: Overview -->
+    <section id="view-overview" class="view-section">
+      <!-- Loading Skeleton -->
+      <div id="loading" class="loading-skeleton" style="display:none">
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+      </div>
+
+      <!-- Empty State -->
+      <div id="empty-state" class="empty-state" style="display:none">
+        <div class="empty-icon">&#x1f4ed;</div>
+        <div class="empty-text">No activities yet</div>
+        <div class="empty-hint">Connect a service and hit Sync to get started</div>
+      </div>
+
+      <!-- Headline Metrics -->
+      <div id="headline-metrics" class="headline-metrics" style="display:none">
+        <div class="headline-card" id="hl-total">
+          <div class="headline-value">—</div>
+          <div class="headline-label">Total Activities</div>
+        </div>
+        <div class="headline-card" id="hl-prs">
+          <div class="headline-value">—</div>
+          <div class="headline-label">PRs Merged</div>
+        </div>
+        <div class="headline-card" id="hl-reviews">
+          <div class="headline-value">—</div>
+          <div class="headline-label">Reviews</div>
+        </div>
+        <div class="headline-card" id="hl-issues">
+          <div class="headline-value">—</div>
+          <div class="headline-label">Issues Completed</div>
+        </div>
+      </div>
+
+      <!-- Dashboard Grid -->
+      <div id="dashboard" class="dashboard-grid" style="display:none">
+
+        <!-- Row 1, Left: Daily Briefing -->
+        <div class="card card-briefing" id="card-briefing">
+          <div class="card-header">
+            <span class="card-label">Daily Briefing</span>
+            <button id="briefing-refresh" class="btn btn-tiny" title="Regenerate">&#x21bb;</button>
+          </div>
+          <div id="briefing-content" class="briefing-content">
+            <div class="loading-dots">
+              <span class="pulse-dot"></span>
+              <span class="pulse-dot"></span>
+              <span class="pulse-dot"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Row 1, Right: Activity Over Time Chart -->
+        <div class="card card-chart" id="card-activity-chart">
+          <div class="card-header">
+            <span class="card-label">Activity Over Time</span>
+          </div>
+          <div class="chart-container">
+            <canvas id="chart-activity"></canvas>
+          </div>
+        </div>
+
+        <!-- Row 2, Left: PR Stats -->
+        <div class="card" id="card-pr-stats">
+          <div class="card-header">
+            <span class="card-label">PR Stats</span>
+          </div>
+          <div class="pr-stats-layout">
+            <div class="chart-container chart-container-donut">
+              <canvas id="chart-pr"></canvas>
+            </div>
+            <div id="pr-stats-counts" class="pr-stats-counts"></div>
+          </div>
+        </div>
+
+        <!-- Row 2, Right: Feature Areas -->
+        <div class="card" id="card-features">
+          <div class="card-header">
+            <span class="card-label">Feature Areas</span>
+          </div>
+          <div id="features-content" class="features-content"></div>
+        </div>
+
+        <!-- Row 3, Full Width: Linear Progress -->
+        <div class="card card-full-width" id="card-linear">
+          <div class="card-header">
+            <span class="card-label">Linear Progress</span>
+          </div>
+          <div id="linear-content" class="linear-content"></div>
+        </div>
+
+        <!-- Row 4, Full Width: Recent Activity Table -->
+        <div class="card card-full-width" id="card-activity-table">
+          <div class="card-header">
+            <span class="card-label">Recent Activity</span>
+            <span id="activity-count" class="activity-count"></span>
+          </div>
+          <div class="activity-table-wrapper">
+            <table class="activity-table">
+              <thead>
+                <tr>
+                  <th>Kind</th>
+                  <th>Title</th>
+                  <th>Project</th>
+                  <th>Source</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody id="activity-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- View: GitHub -->
+    <section id="view-github" class="view-section" style="display:none">
+      <div class="source-view">
+        <!-- Summary stats row -->
+        <div class="source-stats-row" id="github-stats"></div>
+
+        <!-- PR Table -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-label">Pull Requests</span>
+            <span id="github-pr-count" class="activity-count"></span>
+          </div>
+          <div id="github-cc-filters" class="cc-filter-bar"></div>
+          <div class="activity-table-wrapper">
+            <table class="activity-table">
+              <thead><tr>
+                <th>Status</th><th>Type</th><th>Title</th><th>Project</th><th>Time</th>
+              </tr></thead>
+              <tbody id="github-pr-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Commits Table -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-label">Commits</span>
+            <span id="github-commit-count" class="activity-count"></span>
+          </div>
+          <div class="activity-table-wrapper">
+            <table class="activity-table">
+              <thead><tr>
+                <th>Message</th><th>Project</th><th>Time</th>
+              </tr></thead>
+              <tbody id="github-commit-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Reviews Table -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-label">Reviews</span>
+            <span id="github-review-count" class="activity-count"></span>
+          </div>
+          <div class="activity-table-wrapper">
+            <table class="activity-table">
+              <thead><tr>
+                <th>PR</th><th>Project</th><th>Time</th>
+              </tr></thead>
+              <tbody id="github-review-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- View: Linear -->
+    <section id="view-linear" class="view-section" style="display:none">
+      <div class="source-view">
+        <div class="source-stats-row" id="linear-stats"></div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-label">Issues</span>
+            <span id="linear-issue-count" class="activity-count"></span>
+          </div>
+          <div id="linear-filters" class="cc-filter-bar"></div>
+          <div class="activity-table-wrapper" style="max-height:600px">
+            <table class="activity-table">
+              <thead><tr>
+                <th>ID</th><th>Title</th><th>State</th><th>Priority</th><th>Team</th><th>Time</th>
+              </tr></thead>
+              <tbody id="linear-issue-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- View: Slack -->
+    <section id="view-slack" class="view-section" style="display:none">
+      <div class="source-view">
+        <div class="source-stats-row" id="slack-stats"></div>
+        <!-- Channel breakdown cards -->
+        <div id="slack-channels" class="slack-channels-grid"></div>
+        <!-- Message table -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-label">Messages</span>
+            <span id="slack-message-count" class="activity-count"></span>
+          </div>
+          <div class="activity-table-wrapper" style="max-height:500px">
+            <table class="activity-table">
+              <thead><tr>
+                <th>Channel</th><th>Message</th><th>Kind</th><th>Time</th>
+              </tr></thead>
+              <tbody id="slack-message-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Standup Modal -->
+  <div id="standup-overlay" class="modal-overlay" style="display:none">
+    <div class="modal standup-modal">
+      <div class="modal-header">
+        <h2>Daily Standup</h2>
+        <button id="standup-close" class="btn btn-icon">&times;</button>
+      </div>
+      <div id="standup-modal-content" class="standup-content"></div>
+      <div class="modal-footer">
+        <button id="standup-copy" class="btn">&#x1f4cb; Copy to Clipboard</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-overlay" class="modal-overlay" style="display:none">
+    <div class="modal settings-modal">
+      <div class="modal-header">
+        <h2>Settings</h2>
+        <button id="settings-close" class="btn btn-icon">&times;</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-section">
+          <h3 class="settings-section-title">Connections</h3>
+          <div id="settings-auth-list" class="auth-list"></div>
+        </div>
+        <div class="settings-section">
+          <h3 class="settings-section-title">Preferences</h3>
+          <div id="settings-prefs"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast" style="display:none"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

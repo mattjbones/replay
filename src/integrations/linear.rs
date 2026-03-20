@@ -10,7 +10,7 @@ use super::{Integration, IntegrationError};
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 
 const ISSUES_QUERY: &str = r#"
-query($after: String, $since: DateTime) {
+query($after: String, $since: DateTimeOrDuration) {
   viewer {
     assignedIssues(
       first: 50

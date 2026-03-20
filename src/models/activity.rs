@@ -2,11 +2,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum Source {
+    #[serde(rename = "linear")]
     Linear,
+    #[serde(rename = "github")]
     GitHub,
+    #[serde(rename = "slack")]
     Slack,
+    #[serde(rename = "notion")]
     Notion,
 }
 
