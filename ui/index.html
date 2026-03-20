@@ -17,6 +17,7 @@
         <button class="nav-tab" data-view="github"><svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg> GitHub</button>
         <button class="nav-tab" data-view="linear"><svg class="nav-icon" width="16" height="16" viewBox="0 0 100 100" fill="currentColor"><path d="M3.35 58.76C1.21 56.61 0 53.7 0 50.66V7a7 7 0 0 1 7-7h43.66c3.04 0 5.95 1.21 8.09 3.35l37.9 37.9a11 11 0 0 1 0 15.51l-39.9 39.89a11 11 0 0 1-15.5 0L3.35 58.76Z"/></svg> Linear</button>
         <!-- Slack disabled — requires full OAuth -->
+        <button class="nav-tab" data-view="trends"><svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 13L5 8l3 3 7-9"/></svg> Trends</button>
       </nav>
     </div>
     <div class="header-right">
@@ -302,6 +303,111 @@
               </tr></thead>
               <tbody id="slack-message-tbody"></tbody>
             </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- View: Trends -->
+    <section id="view-trends" class="view-section" style="display:none">
+      <div class="source-view">
+        <!-- AI Trends Summary -->
+        <div class="ai-summary-bento">
+          <div class="ai-summary-inner">
+            <div class="ai-summary-header">
+              <span class="ai-summary-badge">AI</span>
+              <span class="ai-summary-label">Trends Analysis</span>
+            </div>
+            <div id="trends-ai-summary" class="ai-summary-content">
+              <div class="loading-dots"><span class="pulse-dot"></span><span class="pulse-dot"></span><span class="pulse-dot"></span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Productivity Score + Predictions -->
+        <div class="source-stats-row" id="trends-predictions"></div>
+
+        <!-- Anomaly Alerts -->
+        <div id="anomaly-alerts"></div>
+
+        <!-- Forecast + Productivity -->
+        <div class="trends-grid">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-label">Forecast (next 3 weeks)</span>
+              <span class="info-icon">i<span class="info-tooltip">Holt-Winters double exponential smoothing on your trailing 12 weeks of activity. Dashed lines show predicted values; triangles mark forecast points. Captures both level and trend momentum.</span></span>
+            </div>
+            <div class="chart-container"><canvas id="chart-forecast"></canvas></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <span class="card-label">Productivity Score</span>
+              <span class="info-icon">i<span class="info-tooltip">Weighted composite: PRs merged (x3) + issues completed (x2) + reviews (x1.5) + commits (x0.5). The dashed line is your 12-week baseline average. Trend is determined by linear regression slope.</span></span>
+            </div>
+            <div class="chart-container"><canvas id="chart-productivity"></canvas></div>
+          </div>
+        </div>
+
+        <!-- Velocity + Cycle Time -->
+        <div class="trends-grid">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-label">Weekly Velocity</span>
+              <span class="info-icon">i<span class="info-tooltip">Raw weekly counts of PRs merged, issues completed, commits pushed, and reviews. Dashed lines show the linear regression trend for each series over the trailing 12 weeks.</span></span>
+            </div>
+            <div class="chart-container"><canvas id="chart-velocity"></canvas></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <span class="card-label">Cycle Time (hours)</span>
+              <span class="info-icon">i<span class="info-tooltip">Average time in hours from issue created to issue completed, grouped by week. Computed by joining matching source_id pairs in the activities table. Lower is better.</span></span>
+            </div>
+            <div class="chart-container"><canvas id="chart-cycle-time"></canvas></div>
+          </div>
+        </div>
+
+        <!-- Day Clusters + Project Prediction -->
+        <div class="trends-grid">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-label">Work Day Types</span>
+              <span class="info-icon">i<span class="info-tooltip">K-means clustering (k=3) on daily activity vectors [commits, PRs, reviews, issues, messages]. Each day is assigned to the nearest cluster. Clusters are auto-named by their dominant activity dimension.</span></span>
+            </div>
+            <div id="cluster-container"></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <span class="card-label">Tomorrow's Projects</span>
+              <span class="info-icon">i<span class="info-tooltip">Naive Bayes classification: P(project | day-of-week). Uses 12 weeks of historical data to estimate which projects you typically work on each day of the week, then predicts for tomorrow.</span></span>
+            </div>
+            <div id="project-prediction-container"></div>
+          </div>
+        </div>
+
+        <!-- Heatmap -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-label">Work Patterns</span>
+            <span class="info-icon">i<span class="info-tooltip">Activity heatmap showing when you work. Each cell is a day-of-week x hour-of-day bucket counted over 12 weeks. Brighter = more activity. Helps identify your peak productivity hours.</span></span>
+          </div>
+          <div id="heatmap-container" class="heatmap-container"></div>
+        </div>
+
+        <!-- Focus + Burnout -->
+        <div class="trends-grid">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-label">Focus Distribution</span>
+              <span class="info-icon">i<span class="info-tooltip">Stacked area chart of your top 6 projects by activity volume over time. Shows whether your attention is consolidating on fewer projects or fragmenting across many.</span></span>
+            </div>
+            <div class="chart-container"><canvas id="chart-focus"></canvas></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <span class="card-label">Burnout Indicators</span>
+              <span class="info-icon">i<span class="info-tooltip">Two signals: off-hours work % (weekends + before 8am/after 8pm) on the left axis, and Slack message volume on the right. An increasing off-hours trend may indicate unsustainable pace.</span></span>
+            </div>
+            <div class="chart-container"><canvas id="chart-burnout"></canvas></div>
           </div>
         </div>
       </div>

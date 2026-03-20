@@ -131,6 +131,166 @@ pub fn get_sync_cursor(db: &Database, source: &Source) -> Option<String> {
     .ok()
 }
 
+// ---------------------------------------------------------------------------
+// Trends queries
+// ---------------------------------------------------------------------------
+
+/// Weekly activity counts by kind for trailing N weeks.
+pub fn query_weekly_velocity(
+    db: &Database,
+    since: DateTime<Utc>,
+) -> rusqlite::Result<Vec<(String, String, i64)>> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT strftime('%Y-W%W', occurred_at) AS week, kind, COUNT(*) AS cnt
+         FROM activities WHERE occurred_at >= ?1
+         GROUP BY week, kind ORDER BY week",
+    )?;
+    let rows = stmt.query_map(params![since.to_rfc3339()], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    rows.collect()
+}
+
+/// Activity heatmap: day-of-week (0=Sun) x hour-of-day.
+pub fn query_activity_heatmap(
+    db: &Database,
+    since: DateTime<Utc>,
+) -> rusqlite::Result<Vec<(i32, i32, i64)>> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT CAST(strftime('%w', occurred_at) AS INTEGER) AS dow,
+                CAST(strftime('%H', occurred_at) AS INTEGER) AS hour,
+                COUNT(*) AS cnt
+         FROM activities WHERE occurred_at >= ?1
+         GROUP BY dow, hour",
+    )?;
+    let rows = stmt.query_map(params![since.to_rfc3339()], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    rows.collect()
+}
+
+/// Cycle time: pairs issue_created → issue_completed by source_id.
+pub fn query_cycle_times(
+    db: &Database,
+    since: DateTime<Utc>,
+) -> rusqlite::Result<Vec<(String, f64)>> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT strftime('%Y-W%W', comp.occurred_at) AS week,
+                (julianday(comp.occurred_at) - julianday(c.occurred_at)) * 24.0 AS hours
+         FROM activities c
+         JOIN activities comp
+           ON c.source = comp.source
+           AND c.source_id = comp.source_id
+           AND c.kind = 'issue_created'
+           AND comp.kind = 'issue_completed'
+         WHERE comp.occurred_at >= ?1
+           AND hours > 0",
+    )?;
+    let rows = stmt.query_map(params![since.to_rfc3339()], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
+    rows.collect()
+}
+
+/// Weekly project distribution.
+pub fn query_project_distribution(
+    db: &Database,
+    since: DateTime<Utc>,
+) -> rusqlite::Result<Vec<(String, String, i64)>> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT strftime('%Y-W%W', occurred_at) AS week,
+                COALESCE(project, 'Other') AS proj,
+                COUNT(*) AS cnt
+         FROM activities WHERE occurred_at >= ?1
+         GROUP BY week, proj ORDER BY week, cnt DESC",
+    )?;
+    let rows = stmt.query_map(params![since.to_rfc3339()], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    rows.collect()
+}
+
+/// Weekly off-hours ratio (weekend + before 8am/after 8pm).
+pub fn query_off_hours_ratio(
+    db: &Database,
+    since: DateTime<Utc>,
+) -> rusqlite::Result<Vec<(String, i64, i64)>> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT strftime('%Y-W%W', occurred_at) AS week,
+                COUNT(*) AS total,
+                SUM(CASE
+                  WHEN CAST(strftime('%w', occurred_at) AS INTEGER) IN (0, 6) THEN 1
+                  WHEN CAST(strftime('%H', occurred_at) AS INTEGER) >= 20
+                    OR CAST(strftime('%H', occurred_at) AS INTEGER) < 8 THEN 1
+                  ELSE 0 END) AS off_hours
+         FROM activities WHERE occurred_at >= ?1
+         GROUP BY week ORDER BY week",
+    )?;
+    let rows = stmt.query_map(params![since.to_rfc3339()], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    rows.collect()
+}
+
+/// Weekly message volume (Slack messages + thread replies).
+pub fn query_message_volume(
+    db: &Database,
+    since: DateTime<Utc>,
+) -> rusqlite::Result<Vec<(String, i64)>> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT strftime('%Y-W%W', occurred_at) AS week, COUNT(*) AS cnt
+         FROM activities WHERE occurred_at >= ?1
+           AND kind IN ('message_sent', 'thread_replied')
+         GROUP BY week ORDER BY week",
+    )?;
+    let rows = stmt.query_map(params![since.to_rfc3339()], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
+    rows.collect()
+}
+
+/// Daily activity vectors: (date, kind, count) for clustering.
+pub fn query_daily_vectors(
+    db: &Database,
+    since: DateTime<Utc>,
+) -> rusqlite::Result<Vec<(String, String, i64)>> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT strftime('%Y-%m-%d', occurred_at) AS day, kind, COUNT(*) AS cnt
+         FROM activities WHERE occurred_at >= ?1
+         GROUP BY day, kind ORDER BY day",
+    )?;
+    let rows = stmt.query_map(params![since.to_rfc3339()], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    rows.collect()
+}
+
+/// Day-of-week project activity: (dow 0-6, project, count) for next-day prediction.
+pub fn query_dow_project(
+    db: &Database,
+    since: DateTime<Utc>,
+) -> rusqlite::Result<Vec<(i32, String, i64)>> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT CAST(strftime('%w', occurred_at) AS INTEGER) AS dow,
+                COALESCE(project, 'Other') AS proj,
+                COUNT(*) AS cnt
+         FROM activities WHERE occurred_at >= ?1
+         GROUP BY dow, proj",
+    )?;
+    let rows = stmt.query_map(params![since.to_rfc3339()], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    rows.collect()
+}
+
 /// Maps a rusqlite row to an Activity struct.
 fn row_to_activity(row: &rusqlite::Row) -> rusqlite::Result<Activity> {
     let source_str: String = row.get(1)?;

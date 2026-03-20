@@ -88,6 +88,8 @@ pub fn run() {
             commands::get_standup,
             commands::get_open_tickets,
             commands::get_open_prs,
+            commands::get_trends_data,
+            commands::get_trends_ai_summary,
         ]);
 
     tracing::info!("calling tauri::Builder::run()...");

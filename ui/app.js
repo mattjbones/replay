@@ -25,6 +25,12 @@ const state = {
   charts: {
     activity: null,
     pr: null,
+    velocity: null,
+    cycleTime: null,
+    focus: null,
+    burnout: null,
+    forecast: null,
+    productivity: null,
   },
   gridLayout: null,
   gridEditMode: false,
@@ -441,6 +447,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     viewGithub: $("#view-github"),
     viewLinear: $("#view-linear"),
     viewSlack: $("#view-slack"),
+    viewTrends: $("#view-trends"),
+    trendsAiSummary: $("#trends-ai-summary"),
+    trendsPredictions: $("#trends-predictions"),
+    anomalyAlerts: $("#anomaly-alerts"),
+    chartForecast: $("#chart-forecast"),
+    chartProductivity: $("#chart-productivity"),
+    chartVelocity: $("#chart-velocity"),
+    chartCycleTime: $("#chart-cycle-time"),
+    clusterContainer: $("#cluster-container"),
+    projectPredContainer: $("#project-prediction-container"),
+    heatmapContainer: $("#heatmap-container"),
+    chartFocus: $("#chart-focus"),
+    chartBurnout: $("#chart-burnout"),
 
     // Standup modal
     standupOverlay: $("#standup-overlay"),
@@ -542,6 +561,24 @@ function bindEvents() {
   dom.syncBtn.addEventListener("mouseenter", updateSyncTooltip);
   updateSyncTooltip();
 
+  // Info tooltips: position fixed on hover to escape overflow:hidden
+  document.addEventListener("mouseenter", (e) => {
+    const icon = e.target.closest(".info-icon");
+    if (!icon) return;
+    const tip = icon.querySelector(".info-tooltip");
+    if (!tip) return;
+    const rect = icon.getBoundingClientRect();
+    tip.style.display = "block";
+    tip.style.top = (rect.bottom + 6) + "px";
+    tip.style.left = Math.max(8, Math.min(rect.left - 130 + 9, window.innerWidth - 290)) + "px";
+  }, true);
+  document.addEventListener("mouseleave", (e) => {
+    const icon = e.target.closest(".info-icon");
+    if (!icon) return;
+    const tip = icon.querySelector(".info-tooltip");
+    if (tip) tip.style.display = "none";
+  }, true);
+
   // Briefing refresh
   dom.briefingRefresh.addEventListener("click", () => {
     const key = cacheKey();
@@ -618,6 +655,16 @@ function switchView(view) {
   // Show target
   const el = document.getElementById(`view-${view}`);
   if (el) el.style.display = '';
+  // Hide date controls + period tabs on Trends (it's always trailing 12 weeks)
+  const dateNav = document.querySelector('.date-nav');
+  const tabBar = document.getElementById('tab-bar');
+  if (view === 'trends') {
+    if (dateNav) dateNav.style.display = 'none';
+    if (tabBar) tabBar.style.display = 'none';
+  } else {
+    if (dateNav) dateNav.style.display = '';
+    if (tabBar) tabBar.style.display = '';
+  }
   // Load data
   loadViewData(view);
 }
@@ -625,6 +672,10 @@ function switchView(view) {
 function loadViewData(view) {
   if (view === 'overview') {
     loadDashboard();
+    return;
+  }
+  if (view === 'trends') {
+    loadTrendsView();
     return;
   }
   // Source views need digest data
@@ -1774,6 +1825,407 @@ function relativeTime(dateStr) {
   if (diffDay < 30) return `${Math.floor(diffDay / 7)}w ago`;
   return new Date(dateStr).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
+
+// ===== Trends View =====
+
+const TREND_CHART_OPTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { position: 'bottom', labels: { color: '#8a8a9a', font: { size: 11 }, boxWidth: 12, padding: 12 } },
+  },
+  scales: {
+    x: { ticks: { color: '#8a8a9a', font: { size: 10 } }, grid: { display: false } },
+    y: { ticks: { color: '#8a8a9a', font: { size: 11 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+  },
+};
+
+async function loadTrendsView() {
+  try {
+    const data = await invoke('get_trends_data');
+    renderTrendsHeader(data.productivity, data.prediction);
+    renderAnomalies(data.anomalies);
+    renderForecastChart(data.velocity, data.prediction);
+    renderProductivityChart(data.productivity);
+    renderVelocityChart(data.velocity);
+    renderCycleTimeChart(data.cycle_time);
+    renderDayClusters(data.day_clusters);
+    renderProjectPrediction(data.project_prediction);
+    renderHeatmap(data.heatmap);
+    renderFocusChart(data.focus);
+    renderBurnoutChart(data.burnout);
+    // Generate AI summary async (don't block)
+    generateTrendsAiSummary(data);
+  } catch (err) {
+    showToast(`Failed to load trends: ${err}`, 'error');
+  }
+}
+
+async function generateTrendsAiSummary(data) {
+  dom.trendsAiSummary.innerHTML = '<div class="loading-dots"><span class="pulse-dot"></span><span class="pulse-dot"></span><span class="pulse-dot"></span></div>';
+
+  // Build a compact data summary for the LLM
+  const p = data.productivity;
+  const f = data.prediction;
+  const b = data.burnout;
+  const anomalyDesc = data.anomalies.slice(0, 4).map(a =>
+    `${a.kind} was ${a.direction} in ${a.week} (${a.value}, ${a.z_score}\u03c3)`
+  ).join('; ') || 'none';
+  const clusterDesc = data.day_clusters.clusters.map(c =>
+    `${c.name}: ${c.count} days`
+  ).join(', ');
+  const projPred = data.project_prediction.slice(0, 3).map(pp =>
+    `${pp.project} (${Math.round(pp.probability * 100)}%)`
+  ).join(', ');
+  const focusProjects = Object.keys(data.focus.projects).join(', ');
+
+  const forecastLines = Object.entries(f.forecasts).map(([kind, vals]) =>
+    `${kind}: ${vals.map(v => v.toFixed(1)).join(', ')}`
+  ).join('; ');
+
+  const prompt = `You are analyzing a software engineer's 12-week activity trends. Give a concise, insightful 3-4 bullet analysis in markdown. Be specific with numbers. Highlight what's notable — don't just restate data.
+
+Productivity: current score ${p.current_score}, baseline avg ${p.baseline_avg}, trend ${p.trend}
+Burnout: off-hours trend ${b.trend_direction}, latest off-hours ${b.off_hours_pct.slice(-1)[0]?.toFixed(1) || 0}%
+Forecast (next 3 weeks): ${forecastLines}
+Anomalies: ${anomalyDesc}
+Day types: ${clusterDesc}
+Tomorrow prediction: ${projPred}
+Active projects: ${focusProjects}`;
+
+  try {
+    // Use the same LLM path as briefings
+    const summary = await invoke('get_trends_ai_summary', { prompt });
+    if (summary) {
+      dom.trendsAiSummary.innerHTML = renderMarkdown(summary);
+    } else {
+      dom.trendsAiSummary.innerHTML = '<span class="briefing-disabled">Add an Anthropic API key in Settings to enable AI analysis.</span>';
+    }
+  } catch (err) {
+    dom.trendsAiSummary.innerHTML = '<span class="briefing-disabled">AI summary unavailable. Add an Anthropic API key in Settings.</span>';
+  }
+}
+
+function renderTrendsHeader(productivity, prediction) {
+  const trendIcon = productivity.trend === 'improving' ? '\u2197' : productivity.trend === 'declining' ? '\u2198' : '\u2192';
+  dom.trendsPredictions.innerHTML = renderStatCards([
+    { value: productivity.current_score, label: `Productivity ${trendIcon}` },
+    { value: productivity.baseline_avg, label: '12-wk Average' },
+    { value: prediction.confidence.charAt(0).toUpperCase() + prediction.confidence.slice(1), label: 'Forecast Confidence' },
+    { value: productivity.trend.charAt(0).toUpperCase() + productivity.trend.slice(1), label: 'Trend' },
+  ]);
+}
+
+function renderAnomalies(anomalies) {
+  if (!anomalies || !anomalies.length) {
+    dom.anomalyAlerts.innerHTML = '';
+    return;
+  }
+  const kindLabels = { pr_merged: 'PRs Merged', issue_completed: 'Issues Done', commit_pushed: 'Commits', pr_reviewed: 'Reviews' };
+  dom.anomalyAlerts.innerHTML = anomalies.slice(0, 6).map(a => {
+    const icon = a.direction === 'high' ? '\u26a1' : '\u26a0';
+    const label = kindLabels[a.kind] || a.kind;
+    const desc = a.direction === 'high'
+      ? `${label}: ${a.value} in ${a.week} (${a.z_score.toFixed(1)}\u03c3 above avg)`
+      : `${label}: ${a.value} in ${a.week} (${Math.abs(a.z_score).toFixed(1)}\u03c3 below avg)`;
+    return `<span class="anomaly-alert ${a.direction}">${icon} ${desc}</span>`;
+  }).join('');
+}
+
+function renderForecastChart(velocity, prediction) {
+  if (!hasChartJs()) return;
+  if (state.charts.forecast) state.charts.forecast.destroy();
+
+  const colorMap = {
+    pr_merged: KIND_COLORS.merges,
+    issue_completed: KIND_COLORS.completed || '#34d058',
+    commit_pushed: KIND_COLORS.commits,
+    pr_reviewed: KIND_COLORS.reviews,
+  };
+  const labelMap = { pr_merged: 'PRs Merged', issue_completed: 'Issues Done', commit_pushed: 'Commits', pr_reviewed: 'Reviews' };
+  const allLabels = [...velocity.weeks, ...prediction.weeks_ahead].map(w => w.replace(/^\d{4}-/, ''));
+  const datasets = [];
+
+  for (const [kind, hist] of Object.entries(velocity.series)) {
+    const color = colorMap[kind] || '#888';
+    const forecast = prediction.forecasts[kind] || [];
+    // Historical data (solid)
+    datasets.push({
+      label: labelMap[kind] || kind,
+      data: [...hist, ...new Array(forecast.length).fill(null)],
+      borderColor: color, backgroundColor: color + '33',
+      fill: false, tension: 0.3, pointRadius: 3,
+    });
+    // Forecast (dashed)
+    if (forecast.length) {
+      datasets.push({
+        label: `${labelMap[kind] || kind} forecast`,
+        data: [...new Array(hist.length - 1).fill(null), hist[hist.length - 1], ...forecast],
+        borderColor: color, borderDash: [6, 4],
+        pointStyle: 'triangle', pointRadius: 4, fill: false,
+      });
+    }
+  }
+
+  state.charts.forecast = new Chart(dom.chartForecast.getContext('2d'), {
+    type: 'line',
+    data: { labels: allLabels, datasets },
+    options: {
+      ...TREND_CHART_OPTS,
+      plugins: {
+        ...TREND_CHART_OPTS.plugins,
+        annotation: undefined,
+      },
+    },
+  });
+}
+
+function renderProductivityChart(prod) {
+  if (!hasChartJs()) return;
+  if (state.charts.productivity) state.charts.productivity.destroy();
+
+  const ctx = dom.chartProductivity.getContext('2d');
+  state.charts.productivity = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: prod.weeks.map(w => w.replace(/^\d{4}-/, '')),
+      datasets: [
+        {
+          label: 'Score',
+          data: prod.scores,
+          borderColor: '#a371f7',
+          backgroundColor: 'rgba(163, 113, 247, 0.15)',
+          fill: true, tension: 0.3, pointRadius: 3,
+        },
+        {
+          label: 'Baseline',
+          data: new Array(prod.scores.length).fill(prod.baseline_avg),
+          borderColor: '#5a5a6e', borderDash: [5, 5],
+          pointRadius: 0, fill: false,
+        },
+      ],
+    },
+    options: TREND_CHART_OPTS,
+  });
+}
+
+function renderDayClusters(data) {
+  const palette = ['#a371f7', '#58a6ff', '#34d058'];
+  const dims = ['Commits', 'PRs', 'Reviews', 'Issues', 'Msgs'];
+  let html = '<div class="cluster-grid">';
+  data.clusters.forEach((c, i) => {
+    const color = palette[i % palette.length];
+    const maxC = Math.max(1, ...c.centroid);
+    const bars = c.centroid.map((v, di) =>
+      `<div class="cluster-bar-seg" style="flex:${Math.max(v, 0.1)};background:${color};opacity:${0.3 + 0.7 * (v / maxC)}" title="${dims[di]}: ${v}"></div>`
+    ).join('');
+    html += `<div class="cluster-card">
+      <div class="cluster-dot" style="background:${color}"></div>
+      <span class="cluster-name">${escapeHtml(c.name)}</span>
+      <span class="cluster-count">${c.count} days</span>
+      <div class="cluster-bar">${bars}</div>
+    </div>`;
+  });
+  html += '</div>';
+  dom.clusterContainer.innerHTML = html;
+}
+
+function renderProjectPrediction(predictions) {
+  if (!predictions.length) {
+    dom.projectPredContainer.innerHTML = '<div class="no-data">Not enough data</div>';
+    return;
+  }
+  const maxProb = predictions[0]?.probability || 1;
+  let html = '<div class="pred-list">';
+  for (const p of predictions) {
+    const pct = Math.round(p.probability * 100);
+    const barPct = Math.round((p.probability / maxProb) * 100);
+    html += `<div class="pred-row">
+      <span class="pred-label">${escapeHtml(p.project)}</span>
+      <div class="pred-bar-track">
+        <div class="pred-bar" style="width:${barPct}%;background:var(--linear)">${pct}%</div>
+      </div>
+    </div>`;
+  }
+  html += '</div>';
+  dom.projectPredContainer.innerHTML = html;
+}
+
+function renderVelocityChart(v) {
+  if (!hasChartJs()) return;
+  if (state.charts.velocity) state.charts.velocity.destroy();
+
+  const colorMap = {
+    pr_merged: KIND_COLORS.merges,
+    issue_completed: KIND_COLORS.completed || '#34d058',
+    commit_pushed: KIND_COLORS.commits,
+    pr_reviewed: KIND_COLORS.reviews,
+  };
+  const labelMap = { pr_merged: 'PRs Merged', issue_completed: 'Issues Done', commit_pushed: 'Commits', pr_reviewed: 'Reviews' };
+  const datasets = [];
+
+  for (const [kind, values] of Object.entries(v.series)) {
+    const color = colorMap[kind] || '#888';
+    datasets.push({
+      label: labelMap[kind] || kind,
+      data: values,
+      borderColor: color,
+      backgroundColor: color + '33',
+      fill: false, tension: 0.3, pointRadius: 3,
+    });
+    // Trend line
+    const slope = v.trend_slopes[kind] || 0;
+    const n = values.length;
+    if (n >= 2) {
+      const avg = values.reduce((a, b) => a + b, 0) / n;
+      const midX = (n - 1) / 2;
+      const trendData = values.map((_, i) => avg + slope * (i - midX));
+      datasets.push({
+        label: `${labelMap[kind] || kind} trend`,
+        data: trendData,
+        borderColor: color,
+        borderDash: [5, 5],
+        pointRadius: 0, fill: false,
+      });
+    }
+  }
+
+  const ctx = dom.chartVelocity.getContext('2d');
+  state.charts.velocity = new Chart(ctx, {
+    type: 'line',
+    data: { labels: v.weeks.map(w => w.replace(/^\d{4}-/, '')), datasets },
+    options: TREND_CHART_OPTS,
+  });
+}
+
+function renderCycleTimeChart(cycleTime) {
+  if (!hasChartJs()) return;
+  if (state.charts.cycleTime) state.charts.cycleTime.destroy();
+  if (!cycleTime.length) {
+    dom.chartCycleTime.parentElement.innerHTML = '<div class="no-data">No cycle time data</div>';
+    return;
+  }
+
+  const ctx = dom.chartCycleTime.getContext('2d');
+  state.charts.cycleTime = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: cycleTime.map(c => c.week.replace(/^\d{4}-/, '')),
+      datasets: [{
+        label: 'Avg Hours',
+        data: cycleTime.map(c => Math.round(c.avg_hours * 10) / 10),
+        backgroundColor: KIND_COLORS.issues || '#5e6ad2',
+        borderRadius: 3,
+      }],
+    },
+    options: TREND_CHART_OPTS,
+  });
+}
+
+function renderHeatmap(cells) {
+  const max = Math.max(1, ...cells.map(c => c.count));
+  const grid = Array.from({ length: 7 }, () => new Array(24).fill(0));
+  for (const c of cells) grid[c.day][c.hour] = c.count;
+
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  let html = '<div class="heatmap-grid">';
+  html += '<div class="heatmap-label"></div>';
+  for (let h = 0; h < 24; h++) {
+    html += `<div class="heatmap-hour-label">${h}</div>`;
+  }
+  for (let d = 0; d < 7; d++) {
+    html += `<div class="heatmap-label">${days[d]}</div>`;
+    for (let h = 0; h < 24; h++) {
+      const count = grid[d][h];
+      const intensity = count / max;
+      const bg = `rgba(163, 113, 247, ${0.05 + intensity * 0.9})`;
+      html += `<div class="heatmap-cell" style="background:${bg}" title="${days[d]} ${h}:00 — ${count} activities"></div>`;
+    }
+  }
+  html += '</div>';
+  dom.heatmapContainer.innerHTML = html;
+}
+
+function renderFocusChart(focus) {
+  if (!hasChartJs()) return;
+  if (state.charts.focus) state.charts.focus.destroy();
+
+  const palette = ['#a371f7', '#58a6ff', '#34d058', '#d4a72c', '#e94560', '#5e6ad2', '#8b949e'];
+  const datasets = [];
+  let i = 0;
+  for (const [proj, values] of Object.entries(focus.projects)) {
+    const color = palette[i % palette.length];
+    datasets.push({
+      label: proj,
+      data: values,
+      backgroundColor: color + '88',
+      borderColor: color,
+      fill: 'origin',
+      tension: 0.3, pointRadius: 0,
+    });
+    i++;
+  }
+
+  const ctx = dom.chartFocus.getContext('2d');
+  state.charts.focus = new Chart(ctx, {
+    type: 'line',
+    data: { labels: focus.weeks.map(w => w.replace(/^\d{4}-/, '')), datasets },
+    options: {
+      ...TREND_CHART_OPTS,
+      scales: {
+        ...TREND_CHART_OPTS.scales,
+        y: { ...TREND_CHART_OPTS.scales.y, stacked: true },
+      },
+    },
+  });
+}
+
+function renderBurnoutChart(burnout) {
+  if (!hasChartJs()) return;
+  if (state.charts.burnout) state.charts.burnout.destroy();
+
+  const ctx = dom.chartBurnout.getContext('2d');
+  state.charts.burnout = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: burnout.weeks.map(w => w.replace(/^\d{4}-/, '')),
+      datasets: [
+        {
+          label: 'Off-hours %',
+          data: burnout.off_hours_pct.map(v => Math.round(v * 10) / 10),
+          borderColor: '#e94560',
+          backgroundColor: 'rgba(233, 69, 96, 0.1)',
+          fill: true, tension: 0.3, yAxisID: 'y',
+        },
+        {
+          label: 'Messages',
+          data: burnout.message_volume,
+          borderColor: '#5e6ad2',
+          fill: false, tension: 0.3, yAxisID: 'y1',
+        },
+      ],
+    },
+    options: {
+      ...TREND_CHART_OPTS,
+      scales: {
+        x: TREND_CHART_OPTS.scales.x,
+        y: {
+          ...TREND_CHART_OPTS.scales.y,
+          position: 'left',
+          title: { display: true, text: 'Off-hours %', color: '#8a8a9a', font: { size: 10 } },
+        },
+        y1: {
+          position: 'right',
+          ticks: { color: '#8a8a9a', font: { size: 11 } },
+          grid: { drawOnChartArea: false },
+          title: { display: true, text: 'Messages', color: '#8a8a9a', font: { size: 10 } },
+        },
+      },
+    },
+  });
+}
+
+// ===== Utilities =====
 
 function escapeHtml(str) {
   if (!str) return "";

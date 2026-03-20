@@ -61,6 +61,20 @@ pub async fn generate_summary(
     }
 }
 
+/// Generate a response from a raw prompt, trying CLI then API fallback.
+pub async fn generate_from_prompt(config: &LlmConfig, prompt: &str) -> Result<String, String> {
+    match generate_via_cli(prompt).await {
+        Ok(result) => return Ok(result),
+        Err(e) => {
+            tracing::warn!("llm: claude CLI failed ({e}), falling back to API");
+        }
+    }
+    match generate_via_api(config, prompt).await {
+        Ok(result) => Ok(result),
+        Err(e) => Err(format!("LLM generation failed: {e}"))
+    }
+}
+
 /// Find the claude binary, checking common paths since bundled .app doesn't inherit shell PATH.
 fn find_claude_binary() -> Option<String> {
     // Try PATH first

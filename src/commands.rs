@@ -7,7 +7,10 @@ use tauri::State;
 
 use crate::auth::{AuthManager, AuthStatus};
 use crate::config::AppConfig;
-use crate::db::{get_activities_for_range, get_cached_summary, set_cached_summary};
+use crate::db::{get_activities_for_range, get_cached_summary, set_cached_summary,
+    query_weekly_velocity, query_activity_heatmap, query_cycle_times,
+    query_project_distribution, query_off_hours_ratio, query_message_volume,
+    query_daily_vectors, query_dow_project};
 use crate::db::Database;
 use crate::digest::build_digest;
 use crate::models::*;
@@ -432,37 +435,9 @@ pub async fn get_standup(
         tickets = if format_tickets.is_empty() { "(none)".to_string() } else { format_tickets },
     );
 
-    let result = generate_standup_via_cli(&prompt).await;
-    match result {
-        Ok(summary) => {
-            set_cached_summary(&state.db, &cache_key, &summary);
-            Ok(Some(summary))
-        }
-        Err(e) => Err(e),
-    }
-}
-
-async fn generate_standup_via_cli(prompt: &str) -> Result<String, String> {
-    let prompt = prompt.to_string();
-    let result = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("claude")
-            .args(["--print", &prompt])
-            .output()
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-    .map_err(|e| format!("failed to run claude CLI: {e}"))?;
-
-    if !result.status.success() {
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(format!("claude CLI error: {stderr}"));
-    }
-
-    let output = String::from_utf8_lossy(&result.stdout).trim().to_string();
-    if output.is_empty() {
-        return Err("empty response from claude".to_string());
-    }
-    Ok(output)
+    let summary = crate::llm::generate_from_prompt(&config.llm, &prompt).await?;
+    set_cached_summary(&state.db, &cache_key, &summary);
+    Ok(Some(summary))
 }
 
 // ---------------------------------------------------------------------------
@@ -480,4 +455,489 @@ pub async fn get_open_prs(
 ) -> Result<Vec<crate::integrations::github::OpenPr>, String> {
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
     crate::integrations::github::fetch_open_prs(&config).await
+}
+
+#[tauri::command]
+pub async fn get_trends_ai_summary(
+    state: State<'_, AppState>,
+    prompt: String,
+) -> Result<Option<String>, String> {
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
+    match crate::llm::generate_from_prompt(&config.llm, &prompt).await {
+        Ok(summary) => Ok(Some(summary)),
+        Err(_) => Ok(None),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trends & ML
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct TrendsData {
+    pub velocity: VelocityData,
+    pub heatmap: Vec<HeatmapCell>,
+    pub cycle_time: Vec<WeeklyAvg>,
+    pub focus: FocusData,
+    pub prediction: PredictionData,
+    pub burnout: BurnoutData,
+    pub anomalies: Vec<AnomalyWeek>,
+    pub day_clusters: DayClusterData,
+    pub project_prediction: Vec<ProjectPrediction>,
+    pub productivity: ProductivityData,
+}
+
+#[derive(Serialize)]
+pub struct VelocityData {
+    pub weeks: Vec<String>,
+    pub series: HashMap<String, Vec<f64>>,
+    pub trend_slopes: HashMap<String, f64>,
+}
+
+#[derive(Serialize)]
+pub struct HeatmapCell {
+    pub day: i32,
+    pub hour: i32,
+    pub count: i64,
+}
+
+#[derive(Serialize)]
+pub struct WeeklyAvg {
+    pub week: String,
+    pub avg_hours: f64,
+}
+
+#[derive(Serialize)]
+pub struct FocusData {
+    pub weeks: Vec<String>,
+    pub projects: HashMap<String, Vec<f64>>,
+    pub fragmentation_index: Vec<f64>,
+}
+
+#[derive(Serialize)]
+pub struct PredictionData {
+    pub weeks_ahead: Vec<String>,
+    pub forecasts: HashMap<String, Vec<f64>>,
+    pub confidence: String,
+}
+
+#[derive(Serialize)]
+pub struct BurnoutData {
+    pub weeks: Vec<String>,
+    pub off_hours_pct: Vec<f64>,
+    pub message_volume: Vec<f64>,
+    pub trend_direction: String,
+}
+
+#[derive(Serialize)]
+pub struct AnomalyWeek {
+    pub week: String,
+    pub kind: String,
+    pub value: f64,
+    pub z_score: f64,
+    pub direction: String, // "high" or "low"
+}
+
+#[derive(Serialize)]
+pub struct DayClusterData {
+    pub clusters: Vec<DayCluster>,
+    pub days: Vec<ClassifiedDay>,
+}
+
+#[derive(Serialize)]
+pub struct DayCluster {
+    pub name: String,
+    pub centroid: Vec<f64>,  // [commits, prs, reviews, issues, messages]
+    pub count: usize,
+}
+
+#[derive(Serialize)]
+pub struct ClassifiedDay {
+    pub date: String,
+    pub cluster: String,
+}
+
+#[derive(Serialize)]
+pub struct ProjectPrediction {
+    pub project: String,
+    pub probability: f64,
+}
+
+#[derive(Serialize)]
+pub struct ProductivityData {
+    pub weeks: Vec<String>,
+    pub scores: Vec<f64>,
+    pub current_score: f64,
+    pub trend: String,  // "improving", "declining", "stable"
+    pub baseline_avg: f64,
+}
+
+// --- ML helpers ---
+
+fn linear_regression(ys: &[f64]) -> (f64, f64) {
+    let n = ys.len() as f64;
+    if n < 2.0 {
+        return (0.0, ys.first().copied().unwrap_or(0.0));
+    }
+    let x_mean = (n - 1.0) / 2.0;
+    let y_mean = ys.iter().sum::<f64>() / n;
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for (i, y) in ys.iter().enumerate() {
+        let x = i as f64;
+        num += (x - x_mean) * (y - y_mean);
+        den += (x - x_mean) * (x - x_mean);
+    }
+    let slope = if den > 0.0 { num / den } else { 0.0 };
+    let intercept = y_mean - slope * x_mean;
+    (slope, intercept)
+}
+
+/// Holt-Winters double exponential smoothing for forecasting.
+/// Returns `ahead` future values.
+fn holt_winters_forecast(ys: &[f64], ahead: usize, alpha: f64, beta: f64) -> Vec<f64> {
+    if ys.is_empty() { return vec![0.0; ahead]; }
+    if ys.len() == 1 { return vec![ys[0]; ahead]; }
+    let mut level = ys[0];
+    let mut trend = ys[1] - ys[0];
+    for &y in &ys[1..] {
+        let prev_level = level;
+        level = alpha * y + (1.0 - alpha) * (prev_level + trend);
+        trend = beta * (level - prev_level) + (1.0 - beta) * trend;
+    }
+    (1..=ahead).map(|i| (level + trend * i as f64).max(0.0)).collect()
+}
+
+/// Z-score anomaly detection. Returns indices where |z| > threshold.
+fn detect_anomalies(ys: &[f64], threshold: f64) -> Vec<(usize, f64)> {
+    let n = ys.len() as f64;
+    if n < 3.0 { return Vec::new(); }
+    let mean = ys.iter().sum::<f64>() / n;
+    let variance = ys.iter().map(|y| (y - mean).powi(2)).sum::<f64>() / n;
+    let std_dev = variance.sqrt();
+    if std_dev < 0.001 { return Vec::new(); }
+    ys.iter().enumerate()
+        .filter_map(|(i, y)| {
+            let z = (y - mean) / std_dev;
+            if z.abs() > threshold { Some((i, z)) } else { None }
+        })
+        .collect()
+}
+
+/// K-means clustering on f64 vectors. Returns (assignments, centroids).
+fn kmeans(data: &[Vec<f64>], k: usize, max_iter: usize) -> (Vec<usize>, Vec<Vec<f64>>) {
+    if data.is_empty() || k == 0 { return (Vec::new(), Vec::new()); }
+    let dim = data[0].len();
+    let k = k.min(data.len());
+    // Init centroids: evenly spaced from data
+    let step = data.len().max(1) / k.max(1);
+    let mut centroids: Vec<Vec<f64>> = (0..k)
+        .map(|i| data[(i * step).min(data.len() - 1)].clone())
+        .collect();
+    let mut assignments = vec![0usize; data.len()];
+
+    for _ in 0..max_iter {
+        // Assign
+        let mut changed = false;
+        for (i, point) in data.iter().enumerate() {
+            let nearest = centroids.iter().enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    let da: f64 = a.iter().zip(point).map(|(x, y)| (x - y).powi(2)).sum();
+                    let db: f64 = b.iter().zip(point).map(|(x, y)| (x - y).powi(2)).sum();
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+            if assignments[i] != nearest { changed = true; }
+            assignments[i] = nearest;
+        }
+        if !changed { break; }
+        // Recompute centroids
+        for c in 0..k {
+            let members: Vec<&Vec<f64>> = data.iter().zip(&assignments)
+                .filter(|(_, &a)| a == c)
+                .map(|(d, _)| d)
+                .collect();
+            if members.is_empty() { continue; }
+            let n = members.len() as f64;
+            centroids[c] = (0..dim)
+                .map(|d| members.iter().map(|m| m[d]).sum::<f64>() / n)
+                .collect();
+        }
+    }
+    (assignments, centroids)
+}
+
+/// Naive Bayes: P(project | dow) using frequency counts.
+fn naive_bayes_predict(
+    dow_project: &[(i32, String, i64)],
+    target_dow: i32,
+) -> Vec<(String, f64)> {
+    let total_for_dow: i64 = dow_project.iter()
+        .filter(|(d, _, _)| *d == target_dow)
+        .map(|(_, _, c)| c)
+        .sum();
+    if total_for_dow == 0 { return Vec::new(); }
+    let mut probs: Vec<(String, f64)> = dow_project.iter()
+        .filter(|(d, _, _)| *d == target_dow)
+        .map(|(_, proj, cnt)| (proj.clone(), *cnt as f64 / total_for_dow as f64))
+        .collect();
+    probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    probs.truncate(5);
+    probs
+}
+
+#[tauri::command]
+pub async fn get_trends_data(
+    state: State<'_, AppState>,
+) -> Result<TrendsData, String> {
+    let since = Utc::now() - chrono::Duration::weeks(12);
+
+    // Run all queries
+    let velocity_rows = query_weekly_velocity(&state.db, since).map_err(|e| e.to_string())?;
+    let heatmap_rows = query_activity_heatmap(&state.db, since).map_err(|e| e.to_string())?;
+    let cycle_rows = query_cycle_times(&state.db, since).map_err(|e| e.to_string())?;
+    let project_rows = query_project_distribution(&state.db, since).map_err(|e| e.to_string())?;
+    let offhours_rows = query_off_hours_ratio(&state.db, since).map_err(|e| e.to_string())?;
+    let msg_rows = query_message_volume(&state.db, since).map_err(|e| e.to_string())?;
+    let daily_rows = query_daily_vectors(&state.db, since).map_err(|e| e.to_string())?;
+    let dow_proj_rows = query_dow_project(&state.db, since).map_err(|e| e.to_string())?;
+
+    // --- Velocity ---
+    let key_kinds = ["pr_merged", "issue_completed", "commit_pushed", "pr_reviewed"];
+    let mut week_set: Vec<String> = velocity_rows.iter().map(|(w, _, _)| w.clone()).collect();
+    week_set.sort();
+    week_set.dedup();
+
+    let mut vel_series: HashMap<String, Vec<f64>> = HashMap::new();
+    for kind in &key_kinds {
+        let values: Vec<f64> = week_set.iter().map(|w| {
+            velocity_rows.iter()
+                .filter(|(rw, rk, _)| rw == w && rk == *kind)
+                .map(|(_, _, c)| *c as f64)
+                .sum()
+        }).collect();
+        vel_series.insert(kind.to_string(), values);
+    }
+
+    let mut trend_slopes: HashMap<String, f64> = HashMap::new();
+    for (kind, values) in &vel_series {
+        let (slope, _) = linear_regression(values);
+        trend_slopes.insert(kind.clone(), slope);
+    }
+
+    let velocity = VelocityData {
+        weeks: week_set.clone(),
+        series: vel_series.clone(),
+        trend_slopes: trend_slopes.clone(),
+    };
+
+    // --- Anomaly Detection (Z-score on weekly velocity) ---
+    let mut anomalies: Vec<AnomalyWeek> = Vec::new();
+    for kind in &key_kinds {
+        if let Some(values) = vel_series.get(*kind) {
+            for (idx, z) in detect_anomalies(values, 1.5) {
+                if idx < week_set.len() {
+                    anomalies.push(AnomalyWeek {
+                        week: week_set[idx].clone(),
+                        kind: kind.to_string(),
+                        value: values[idx],
+                        z_score: (z * 100.0).round() / 100.0,
+                        direction: if z > 0.0 { "high".to_string() } else { "low".to_string() },
+                    });
+                }
+            }
+        }
+    }
+    anomalies.sort_by(|a, b| b.z_score.abs().partial_cmp(&a.z_score.abs()).unwrap_or(std::cmp::Ordering::Equal));
+
+    // --- Heatmap ---
+    let heatmap: Vec<HeatmapCell> = heatmap_rows.into_iter()
+        .map(|(day, hour, count)| HeatmapCell { day, hour, count })
+        .collect();
+
+    // --- Cycle Time ---
+    let mut ct_map: HashMap<String, Vec<f64>> = HashMap::new();
+    for (week, hours) in &cycle_rows {
+        ct_map.entry(week.clone()).or_default().push(*hours);
+    }
+    let mut cycle_time: Vec<WeeklyAvg> = ct_map.into_iter().map(|(week, hours)| {
+        let avg = hours.iter().sum::<f64>() / hours.len() as f64;
+        WeeklyAvg { week, avg_hours: avg }
+    }).collect();
+    cycle_time.sort_by(|a, b| a.week.cmp(&b.week));
+
+    // --- Focus ---
+    let mut focus_weeks: Vec<String> = project_rows.iter().map(|(w, _, _)| w.clone()).collect();
+    focus_weeks.sort();
+    focus_weeks.dedup();
+
+    let mut proj_totals: HashMap<String, i64> = HashMap::new();
+    for (_, proj, cnt) in &project_rows {
+        *proj_totals.entry(proj.clone()).or_default() += cnt;
+    }
+    let mut top_projects: Vec<(String, i64)> = proj_totals.into_iter().collect();
+    top_projects.sort_by(|a, b| b.1.cmp(&a.1));
+    let top_names: Vec<String> = top_projects.iter().take(6).map(|(n, _)| n.clone()).collect();
+
+    let mut focus_projects: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut frag_index: Vec<f64> = Vec::new();
+    for w in &focus_weeks {
+        let mut active_count = 0u32;
+        for name in &top_names {
+            let cnt = project_rows.iter()
+                .filter(|(rw, rp, _)| rw == w && rp == name)
+                .map(|(_, _, c)| *c as f64)
+                .sum::<f64>();
+            focus_projects.entry(name.clone()).or_insert_with(|| vec![0.0; focus_weeks.len()]);
+            let idx = focus_weeks.iter().position(|fw| fw == w).unwrap();
+            focus_projects.get_mut(name).unwrap()[idx] = cnt;
+            if cnt > 0.0 { active_count += 1; }
+        }
+        frag_index.push(active_count as f64);
+    }
+
+    let focus = FocusData {
+        weeks: focus_weeks,
+        projects: focus_projects,
+        fragmentation_index: frag_index,
+    };
+
+    // --- Holt-Winters Forecasting (3 weeks ahead) ---
+    let n_ahead = 3;
+    let mut forecasts: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut forecast_weeks: Vec<String> = Vec::new();
+    for i in 1..=n_ahead {
+        forecast_weeks.push(format!("W+{i}"));
+    }
+    for kind in &key_kinds {
+        if let Some(values) = vel_series.get(*kind) {
+            let fc = holt_winters_forecast(values, n_ahead, 0.3, 0.1);
+            forecasts.insert(kind.to_string(), fc.iter().map(|v| (v * 10.0).round() / 10.0).collect());
+        }
+    }
+    let confidence = if week_set.len() >= 8 { "high" }
+        else if week_set.len() >= 4 { "medium" }
+        else { "low" };
+    let prediction = PredictionData {
+        weeks_ahead: forecast_weeks,
+        forecasts,
+        confidence: confidence.to_string(),
+    };
+
+    // --- Day Clustering (K-means, k=3) ---
+    let cluster_kinds = ["commit_pushed", "pr_merged", "pr_reviewed", "issue_completed", "message_sent"];
+    let mut day_set: Vec<String> = daily_rows.iter().map(|(d, _, _)| d.clone()).collect();
+    day_set.sort();
+    day_set.dedup();
+
+    let data_points: Vec<Vec<f64>> = day_set.iter().map(|day| {
+        cluster_kinds.iter().map(|kind| {
+            daily_rows.iter()
+                .filter(|(d, k, _)| d == day && k == *kind)
+                .map(|(_, _, c)| *c as f64)
+                .sum()
+        }).collect()
+    }).collect();
+
+    let (assignments, centroids) = kmeans(&data_points, 3, 20);
+
+    // Name clusters by dominant dimension
+    let dim_names = ["Coding", "PRs", "Reviews", "Issues", "Comms"];
+    let clusters: Vec<DayCluster> = centroids.iter().enumerate().map(|(i, c)| {
+        let dominant = c.iter().enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        let name = format!("{} Day", dim_names.get(dominant).unwrap_or(&"Mixed"));
+        let count = assignments.iter().filter(|&&a| a == i).count();
+        DayCluster { name, centroid: c.iter().map(|v| (v * 10.0).round() / 10.0).collect(), count }
+    }).collect();
+
+    let cluster_names: Vec<String> = clusters.iter().map(|c| c.name.clone()).collect();
+    let days: Vec<ClassifiedDay> = day_set.iter().zip(&assignments).map(|(date, &a)| {
+        ClassifiedDay {
+            date: date.clone(),
+            cluster: cluster_names.get(a).cloned().unwrap_or_default(),
+        }
+    }).collect();
+
+    let day_clusters = DayClusterData { clusters, days };
+
+    // --- Project Prediction (Naive Bayes: P(project | tomorrow's dow)) ---
+    let tomorrow_dow = (Utc::now() + chrono::Duration::days(1))
+        .format("%w")
+        .to_string()
+        .parse::<i32>()
+        .unwrap_or(1);
+    let proj_preds = naive_bayes_predict(&dow_proj_rows, tomorrow_dow);
+    let project_prediction: Vec<ProjectPrediction> = proj_preds.into_iter()
+        .map(|(project, probability)| ProjectPrediction {
+            project,
+            probability: (probability * 1000.0).round() / 1000.0,
+        })
+        .collect();
+
+    // --- Productivity Score ---
+    // Weighted composite: PRs merged (3) + issues completed (2) + reviews (1.5) + commits (0.5)
+    let weights: &[(&str, f64)] = &[
+        ("pr_merged", 3.0), ("issue_completed", 2.0),
+        ("pr_reviewed", 1.5), ("commit_pushed", 0.5),
+    ];
+    let weekly_scores: Vec<f64> = week_set.iter().enumerate().map(|(i, _)| {
+        weights.iter().map(|(kind, w)| {
+            vel_series.get(*kind).and_then(|v| v.get(i)).copied().unwrap_or(0.0) * w
+        }).sum()
+    }).collect();
+
+    let baseline_avg = if weekly_scores.is_empty() { 0.0 }
+        else { weekly_scores.iter().sum::<f64>() / weekly_scores.len() as f64 };
+    let current_score = weekly_scores.last().copied().unwrap_or(0.0);
+    let (score_slope, _) = linear_regression(&weekly_scores);
+    let prod_trend = if score_slope > 0.5 { "improving" }
+        else if score_slope < -0.5 { "declining" }
+        else { "stable" };
+
+    let productivity = ProductivityData {
+        weeks: week_set.clone(),
+        scores: weekly_scores.iter().map(|s| (s * 10.0).round() / 10.0).collect(),
+        current_score: (current_score * 10.0).round() / 10.0,
+        trend: prod_trend.to_string(),
+        baseline_avg: (baseline_avg * 10.0).round() / 10.0,
+    };
+
+    // --- Burnout ---
+    let mut burnout_weeks: Vec<String> = offhours_rows.iter().map(|(w, _, _)| w.clone()).collect();
+    burnout_weeks.sort();
+
+    let off_hours_pct: Vec<f64> = burnout_weeks.iter().map(|w| {
+        offhours_rows.iter()
+            .find(|(rw, _, _)| rw == w)
+            .map(|(_, total, off)| if *total > 0 { *off as f64 / *total as f64 * 100.0 } else { 0.0 })
+            .unwrap_or(0.0)
+    }).collect();
+
+    let msg_volume: Vec<f64> = burnout_weeks.iter().map(|w| {
+        msg_rows.iter()
+            .find(|(rw, _)| rw == w)
+            .map(|(_, c)| *c as f64)
+            .unwrap_or(0.0)
+    }).collect();
+
+    let (oh_slope, _) = linear_regression(&off_hours_pct);
+    let trend_direction = if oh_slope > 1.0 { "increasing" }
+        else if oh_slope < -1.0 { "decreasing" }
+        else { "stable" };
+
+    let burnout = BurnoutData {
+        weeks: burnout_weeks,
+        off_hours_pct,
+        message_volume: msg_volume,
+        trend_direction: trend_direction.to_string(),
+    };
+
+    Ok(TrendsData {
+        velocity, heatmap, cycle_time, focus, prediction, burnout,
+        anomalies, day_clusters, project_prediction, productivity,
+    })
 }
