@@ -19,6 +19,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub llm: LlmConfig,
     #[serde(default)]
+    pub working_hours: WorkingHoursConfig,
+    #[serde(default)]
     pub dashboard_layout: HashMap<String, CardPosition>,
 }
 
@@ -44,6 +46,7 @@ impl Default for AppConfig {
             slack: SlackConfig::default(),
             notion: NotionConfig::default(),
             llm: LlmConfig::default(),
+            working_hours: WorkingHoursConfig::default(),
             dashboard_layout: HashMap::new(),
         }
     }
@@ -232,6 +235,55 @@ impl Default for SlackConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NotionConfig {
     // Tokens are stored in the system keychain, not in config.
+}
+
+// ---------------------------------------------------------------------------
+// Working Hours
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkingHoursConfig {
+    #[serde(default = "default_work_start")]
+    pub work_start: String,
+    #[serde(default = "default_work_end")]
+    pub work_end: String,
+    #[serde(default = "default_working_days")]
+    pub working_days: Vec<String>,
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+}
+
+impl Default for WorkingHoursConfig {
+    fn default() -> Self {
+        Self {
+            work_start: default_work_start(),
+            work_end: default_work_end(),
+            working_days: default_working_days(),
+            timezone: default_timezone(),
+        }
+    }
+}
+
+fn default_work_start() -> String {
+    "09:00".to_string()
+}
+
+fn default_work_end() -> String {
+    "17:00".to_string()
+}
+
+fn default_working_days() -> Vec<String> {
+    vec![
+        "Mon".to_string(),
+        "Tue".to_string(),
+        "Wed".to_string(),
+        "Thu".to_string(),
+        "Fri".to_string(),
+    ]
+}
+
+fn default_timezone() -> String {
+    "UTC".to_string()
 }
 
 // ---------------------------------------------------------------------------
