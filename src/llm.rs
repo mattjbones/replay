@@ -29,12 +29,13 @@ pub async fn generate_summary(
 ) -> Result<String, String> {
     let label = period_label(&digest.period);
 
-    let formatted_activities: String = digest
-        .activities
-        .iter()
-        .map(format_activity)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let mut formatted_activities = String::new();
+    for (i, a) in digest.activities.iter().enumerate() {
+        if i > 0 {
+            formatted_activities.push('\n');
+        }
+        formatted_activities.push_str(&format_activity(a));
+    }
 
     let prompt = format!(
         "You are summarizing my work activity for {label}. \
@@ -60,11 +61,40 @@ pub async fn generate_summary(
     }
 }
 
+/// Find the claude binary, checking common paths since bundled .app doesn't inherit shell PATH.
+fn find_claude_binary() -> Option<String> {
+    // Try PATH first
+    if let Ok(output) = std::process::Command::new("which").arg("claude").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(path);
+            }
+        }
+    }
+    // Common install locations
+    let candidates = [
+        dirs::home_dir().map(|h| h.join(".claude/bin/claude")),
+        dirs::home_dir().map(|h| h.join(".local/bin/claude")),
+        dirs::home_dir().map(|h| h.join(".npm-global/bin/claude")),
+        Some(std::path::PathBuf::from("/usr/local/bin/claude")),
+        Some(std::path::PathBuf::from("/opt/homebrew/bin/claude")),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.exists() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
 /// Shell out to `claude --print` to generate the summary.
 async fn generate_via_cli(prompt: &str) -> Result<String, String> {
+    let claude_path = find_claude_binary()
+        .ok_or_else(|| "claude CLI not found".to_string())?;
     let prompt = prompt.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("claude")
+        std::process::Command::new(&claude_path)
             .args(["--print", &prompt])
             .output()
     })

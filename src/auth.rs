@@ -62,18 +62,25 @@ impl AuthManager {
 
     /// GitHub: try `gh` CLI first, then fall back to the token store.
     pub fn get_github_token() -> Result<Option<String>, String> {
-        if let Ok(output) = std::process::Command::new("gh")
-            .args(["auth", "token"])
-            .output()
-        {
-            if output.status.success() {
-                let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !token.is_empty() {
-                    return Ok(Some(token));
+        if let Some(gh_path) = find_gh_binary() {
+            if let Ok(output) = std::process::Command::new(&gh_path)
+                .args(["auth", "token"])
+                .output()
+            {
+                if output.status.success() {
+                    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !token.is_empty() {
+                        return Ok(Some(token));
+                    }
                 }
             }
         }
         Self::get_token(&Source::GitHub)
+    }
+
+    /// Store the Anthropic API key.
+    pub fn set_anthropic_key(key: &str) -> Result<(), String> {
+        Self::db_set("anthropic_api_key", key)
     }
 
     // -- SQLite helpers --
@@ -112,6 +119,28 @@ impl AuthManager {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+/// Find the `gh` binary, checking common paths since bundled .app doesn't inherit shell PATH.
+pub fn find_gh_binary() -> Option<String> {
+    if let Ok(output) = std::process::Command::new("which").arg("gh").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(path);
+            }
+        }
+    }
+    let candidates = [
+        "/usr/local/bin/gh",
+        "/opt/homebrew/bin/gh",
+    ];
+    for path in &candidates {
+        if std::path::Path::new(path).exists() {
+            return Some(path.to_string());
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

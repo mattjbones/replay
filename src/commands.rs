@@ -15,7 +15,7 @@ use crate::sync::SyncScheduler;
 
 pub struct AppState {
     pub db: Arc<Database>,
-    pub config: AppConfig,
+    pub config: std::sync::Mutex<AppConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +101,11 @@ pub async fn save_slack_refresh_token(token: String) -> Result<(), String> {
     AuthManager::set_slack_refresh_token(&token)
 }
 
+#[tauri::command]
+pub async fn save_anthropic_key(key: String) -> Result<(), String> {
+    AuthManager::set_anthropic_key(&key)
+}
+
 /// Exchange a Slack refresh token for an access token.
 /// Requires client_id and client_secret from the Slack app config.
 #[tauri::command]
@@ -177,7 +182,7 @@ pub async fn clear_cache(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 pub async fn trigger_sync(state: State<'_, AppState>) -> Result<String, String> {
     let db = Arc::clone(&state.db);
-    let config = state.config.clone();
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
 
     let scheduler = SyncScheduler::new(db, config);
     scheduler.run_once().await;
@@ -187,12 +192,16 @@ pub async fn trigger_sync(state: State<'_, AppState>) -> Result<String, String> 
 
 #[tauri::command]
 pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
-    Ok(state.config.clone())
+    Ok(state.config.lock().map_err(|e| e.to_string())?.clone())
 }
 
 #[tauri::command]
-pub async fn update_config(config: AppConfig) -> Result<(), String> {
+pub async fn update_config(
+    state: State<'_, AppState>,
+    config: AppConfig,
+) -> Result<(), String> {
     config.save();
+    *state.config.lock().map_err(|e| e.to_string())? = config;
     Ok(())
 }
 
@@ -205,8 +214,9 @@ pub async fn get_llm_summary(
     let (p, start, end) = parse_period_range(&period, date.as_deref())?;
 
     // Build a cache key from period + date range.
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
     let cache_key = format!("summary:{}:{}", period, start.to_rfc3339());
-    let ttl = state.config.ttl.warm_minutes;
+    let ttl = config.ttl.warm_minutes;
 
     // Check cache first.
     if let Some(cached) = get_cached_summary(&state.db, &cache_key, ttl) {
@@ -224,7 +234,7 @@ pub async fn get_llm_summary(
     let digest = build_digest(activities, p);
 
     // Generate summary via claude CLI (preferred) or Anthropic API (fallback).
-    let summary = crate::llm::generate_summary(&state.config.llm, &digest).await?;
+    let summary = crate::llm::generate_summary(&config.llm, &digest).await?;
 
     // Cache the result.
     set_cached_summary(&state.db, &cache_key, &summary);
@@ -357,25 +367,35 @@ pub async fn get_standup(
     let today_start = Utc.from_utc_datetime(&base_date.and_time(midnight));
     let today_end = today_start + chrono::Duration::days(1);
 
-    // Also get yesterday for context
-    let yesterday_start = today_start - chrono::Duration::days(1);
-
-    let cache_key = format!("standup:{}", base_date);
-    let ttl = state.config.ttl.warm_minutes;
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
+    let cache_key = format!("standup:v2:{}", base_date);
+    let ttl = config.ttl.warm_minutes;
     if let Some(cached) = get_cached_summary(&state.db, &cache_key, ttl) {
         return Ok(Some(cached));
     }
 
     let today_activities =
         get_activities_for_range(&state.db, today_start, today_end).map_err(|e| e.to_string())?;
-    let yesterday_activities =
-        get_activities_for_range(&state.db, yesterday_start, today_start).map_err(|e| e.to_string())?;
 
-    if today_activities.is_empty() && yesterday_activities.is_empty() {
+    // Fetch open Linear tickets (urgent + high priority only) and open GitHub PRs
+    let (open_tickets, open_prs) = tokio::join!(
+        crate::integrations::linear::fetch_open_tickets(),
+        crate::integrations::github::fetch_open_prs(&config),
+    );
+
+    let urgent_tickets: Vec<_> = open_tickets
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t.priority >= 1 && t.priority <= 2) // 1=urgent, 2=high
+        .collect();
+
+    let open_prs = open_prs.unwrap_or_default();
+
+    if today_activities.is_empty() && urgent_tickets.is_empty() && open_prs.is_empty() {
         return Ok(None);
     }
 
-    let format_list = |acts: &[Activity]| -> String {
+    let format_activities = |acts: &[Activity]| -> String {
         acts.iter()
             .map(|a| {
                 let project = a.project.as_deref().unwrap_or("");
@@ -385,14 +405,31 @@ pub async fn get_standup(
             .join("\n")
     };
 
+    let format_tickets = urgent_tickets.iter()
+        .map(|t| format!("[P{}] {} — {} ({})", t.priority, t.identifier, t.title, t.state))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let format_prs = open_prs.iter()
+        .map(|pr| {
+            let status = if pr.state == "draft" { "draft" } else { "open" };
+            format!("[{}] #{} — {} ({})", status, pr.number, pr.title, pr.repo)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     let prompt = format!(
-        "Generate a concise standup update in markdown with two sections:\n\
-         ## What I Did\n(based on yesterday's and today's completed activities)\n\
-         ## What I Will Do\n(infer from in-progress work, open PRs, started issues)\n\n\
-         Keep each section to 3-5 bullet points. Be specific with ticket/PR numbers.\n\n\
-         Yesterday's activities:\n{}\n\nToday's activities:\n{}",
-        format_list(&yesterday_activities),
-        format_list(&today_activities),
+        "Generate a concise daily standup update in markdown with two sections:\n\
+         ## What I Did\n(based on today's activities — what was shipped, reviewed, or completed)\n\
+         ## What I'm Working On\n(based on my open PRs and high-priority Linear tickets)\n\n\
+         Keep each section to 3-5 bullet points. Be specific with ticket/PR numbers.\n\
+         If there's nothing for a section, omit it.\n\n\
+         Today's activities:\n{activities}\n\n\
+         My open/draft PRs:\n{prs}\n\n\
+         My urgent/high-priority Linear tickets:\n{tickets}",
+        activities = format_activities(&today_activities),
+        prs = if format_prs.is_empty() { "(none)".to_string() } else { format_prs },
+        tickets = if format_tickets.is_empty() { "(none)".to_string() } else { format_tickets },
     );
 
     let result = generate_standup_via_cli(&prompt).await;
@@ -426,4 +463,21 @@ async fn generate_standup_via_cli(prompt: &str) -> Result<String, String> {
         return Err("empty response from claude".to_string());
     }
     Ok(output)
+}
+
+// ---------------------------------------------------------------------------
+// Linear open tickets
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_open_tickets() -> Result<Vec<crate::integrations::linear::OpenTicket>, String> {
+    crate::integrations::linear::fetch_open_tickets().await
+}
+
+#[tauri::command]
+pub async fn get_open_prs(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::integrations::github::OpenPr>, String> {
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
+    crate::integrations::github::fetch_open_prs(&config).await
 }

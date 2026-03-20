@@ -15,7 +15,7 @@
       <nav id="nav-tabs" class="nav-tabs">
         <button class="nav-tab active" data-view="overview">Overview</button>
         <button class="nav-tab" data-view="github"><svg class="nav-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg> GitHub</button>
-        <button class="nav-tab" data-view="linear"><svg class="nav-icon" width="16" height="16" viewBox="0 0 100 100" fill="currentColor"><path d="M1.22541 61.5228c-.97401-1.6673-.97401-3.7212 0-5.3884L41.9398 1.13446c.974-1.66729 2.8055-2.69436 4.7535-2.69436h81.429c1.948 0 3.779 1.02707 4.753 2.69436L173.59 56.1344c.974 1.6672.974 3.7211 0 5.3884L132.876 116.523c-.974 1.667-2.805 2.694-4.753 2.694H46.6933c-1.948 0-3.7795-1.027-4.7535-2.694L1.22541 61.5228z" transform="scale(0.16)"/></svg> Linear</button>
+        <button class="nav-tab" data-view="linear"><svg class="nav-icon" width="16" height="16" viewBox="0 0 100 100" fill="currentColor"><path d="M3.35 58.76C1.21 56.61 0 53.7 0 50.66V7a7 7 0 0 1 7-7h43.66c3.04 0 5.95 1.21 8.09 3.35l37.9 37.9a11 11 0 0 1 0 15.51l-39.9 39.89a11 11 0 0 1-15.5 0L3.35 58.76Z"/></svg> Linear</button>
         <!-- Slack disabled — requires full OAuth -->
       </nav>
     </div>
@@ -39,6 +39,8 @@
     <button id="action-standup" class="btn btn-action">&#x1f4cb; Generate Standup</button>
     <button id="action-settings" class="btn btn-action">&#x2699; Settings</button>
     <div class="action-bar-spacer"></div>
+    <button id="action-edit-layout" class="btn btn-action">&#x270e; Edit Layout</button>
+    <button id="action-reset-layout" class="btn btn-action hidden">&#x21ba; Reset</button>
     <button id="sync-btn" class="btn btn-action">&#x21bb; Sync</button>
   </div>
 
@@ -155,11 +157,11 @@
             <table class="activity-table">
               <thead>
                 <tr>
-                  <th>Kind</th>
+                  <th style="width:80px">Kind</th>
                   <th>Title</th>
-                  <th>Project</th>
-                  <th>Source</th>
-                  <th>Time</th>
+                  <th style="width:140px">Project</th>
+                  <th style="width:80px">Source</th>
+                  <th style="width:80px">Time</th>
                 </tr>
               </thead>
               <tbody id="activity-tbody"></tbody>
@@ -186,7 +188,7 @@
           <div class="activity-table-wrapper">
             <table class="activity-table">
               <thead><tr>
-                <th>Status</th><th>Type</th><th>Title</th><th>Project</th><th>Time</th>
+                <th style="width:80px">Status</th><th style="width:90px">Type</th><th>Title</th><th style="width:140px">Project</th><th style="width:80px">Time</th>
               </tr></thead>
               <tbody id="github-pr-tbody"></tbody>
             </table>
@@ -224,6 +226,22 @@
             </table>
           </div>
         </div>
+
+        <!-- Open / Draft PRs -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-label">Open PRs</span>
+            <span id="github-open-pr-count" class="activity-count"></span>
+          </div>
+          <div class="activity-table-wrapper" style="max-height:600px">
+            <table class="activity-table">
+              <thead><tr>
+                <th style="width:80px">Status</th><th style="width:90px">Type</th><th>Title</th><th style="width:140px">Repo</th><th style="width:80px">Updated</th>
+              </tr></thead>
+              <tbody id="github-open-pr-tbody"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -240,9 +258,25 @@
           <div class="activity-table-wrapper" style="max-height:600px">
             <table class="activity-table">
               <thead><tr>
-                <th>ID</th><th>Title</th><th>State</th><th>Priority</th><th>Team</th><th>Time</th>
+                <th style="width:90px">ID</th><th>Title</th><th style="width:100px">State</th><th style="width:90px">Priority</th><th style="width:100px">Team</th><th style="width:80px">Time</th>
               </tr></thead>
               <tbody id="linear-issue-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Open Tickets -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-label">Open Tickets</span>
+            <span id="linear-open-count" class="activity-count"></span>
+          </div>
+          <div class="activity-table-wrapper" style="max-height:600px">
+            <table class="activity-table">
+              <thead><tr>
+                <th style="width:90px">ID</th><th>Title</th><th style="width:100px">State</th><th style="width:90px">Priority</th><th style="width:100px">Team</th><th style="width:80px">Updated</th>
+              </tr></thead>
+              <tbody id="linear-open-tbody"></tbody>
             </table>
           </div>
         </div>

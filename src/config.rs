@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +18,16 @@ pub struct AppConfig {
     pub notion: NotionConfig,
     #[serde(default)]
     pub llm: LlmConfig,
+    #[serde(default)]
+    pub dashboard_layout: HashMap<String, CardPosition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CardPosition {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
 }
 
 fn default_schedule() -> ScheduleConfig {
@@ -33,6 +44,7 @@ impl Default for AppConfig {
             slack: SlackConfig::default(),
             notion: NotionConfig::default(),
             llm: LlmConfig::default(),
+            dashboard_layout: HashMap::new(),
         }
     }
 }

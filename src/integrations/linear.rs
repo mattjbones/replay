@@ -344,3 +344,133 @@ fn build_metadata(issue: &serde_json::Value) -> serde_json::Value {
         "state_type": issue["state"]["type"],
     })
 }
+
+// ---------------------------------------------------------------------------
+// Open tickets (all assigned, non-completed/cancelled)
+// ---------------------------------------------------------------------------
+
+const OPEN_ISSUES_QUERY: &str = r#"
+query($after: String) {
+  viewer {
+    assignedIssues(
+      first: 50
+      after: $after
+      filter: {
+        state: { type: { nin: ["completed", "canceled", "cancelled"] } }
+      }
+      orderBy: updatedAt
+    ) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id
+        identifier
+        title
+        url
+        state { name type }
+        priority
+        priorityLabel
+        team { name }
+        createdAt
+        updatedAt
+      }
+    }
+  }
+}
+"#;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OpenTicket {
+    pub identifier: String,
+    pub title: String,
+    pub url: String,
+    pub state: String,
+    pub state_type: String,
+    pub priority: i64,
+    pub priority_label: String,
+    pub team: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Fetch all open issues assigned to the viewer, sorted by priority.
+pub async fn fetch_open_tickets() -> Result<Vec<OpenTicket>, String> {
+    let token = AuthManager::get_token(&Source::Linear)
+        .ok()
+        .flatten()
+        .ok_or_else(|| "Linear not connected".to_string())?;
+
+    let client = reqwest::Client::new();
+    let mut tickets: Vec<OpenTicket> = Vec::new();
+    let mut after_cursor: Option<String> = None;
+
+    for _ in 0..5 {
+        let mut variables = serde_json::Map::new();
+        if let Some(ref cursor) = after_cursor {
+            variables.insert("after".to_string(), serde_json::Value::String(cursor.clone()));
+        }
+
+        let body = serde_json::json!({
+            "query": OPEN_ISSUES_QUERY,
+            "variables": variables,
+        });
+
+        let response = client
+            .post(LINEAR_API_URL)
+            .header("Authorization", &token)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Linear request failed: {e}"))?;
+
+        if !response.status().is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(format!("Linear returned error: {text}"));
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse Linear response: {e}"))?;
+
+        let assigned = &json["data"]["viewer"]["assignedIssues"];
+        let nodes = assigned["nodes"]
+            .as_array()
+            .ok_or_else(|| "missing nodes in Linear response".to_string())?;
+
+        if nodes.is_empty() {
+            break;
+        }
+
+        for issue in nodes {
+            tickets.push(OpenTicket {
+                identifier: issue["identifier"].as_str().unwrap_or_default().to_string(),
+                title: issue["title"].as_str().unwrap_or("Untitled").to_string(),
+                url: issue["url"].as_str().unwrap_or_default().to_string(),
+                state: issue["state"]["name"].as_str().unwrap_or_default().to_string(),
+                state_type: issue["state"]["type"].as_str().unwrap_or_default().to_string(),
+                priority: issue["priority"].as_i64().unwrap_or(4),
+                priority_label: issue["priorityLabel"].as_str().unwrap_or("No priority").to_string(),
+                team: issue["team"]["name"].as_str().unwrap_or_default().to_string(),
+                created_at: issue["createdAt"].as_str().unwrap_or_default().to_string(),
+                updated_at: issue["updatedAt"].as_str().unwrap_or_default().to_string(),
+            });
+        }
+
+        let page_info = &assigned["pageInfo"];
+        if page_info["hasNextPage"].as_bool() == Some(true) {
+            after_cursor = page_info["endCursor"].as_str().map(|s| s.to_string());
+        } else {
+            break;
+        }
+    }
+
+    // Sort by priority (1=urgent, 2=high, 3=medium, 4=low, 0=none)
+    tickets.sort_by(|a, b| {
+        let pa = if a.priority == 0 { 5 } else { a.priority };
+        let pb = if b.priority == 0 { 5 } else { b.priority };
+        pa.cmp(&pb)
+    });
+
+    Ok(tickets)
+}

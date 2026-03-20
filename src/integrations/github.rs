@@ -23,8 +23,9 @@ impl GitHubIntegration {
                 return Some(u.clone());
             }
         }
-        // Fall back to gh CLI
-        std::process::Command::new("gh")
+        // Fall back to gh CLI (check common paths for bundled .app)
+        let gh_path = crate::auth::find_gh_binary()?;
+        std::process::Command::new(&gh_path)
             .args(["api", "user", "--jq", ".login"])
             .output()
             .ok()
@@ -292,10 +293,10 @@ impl GitHubIntegration {
             .await
             .map_err(|e| IntegrationError::Parse(e.to_string()))?;
 
+        let empty_vec = Vec::new();
         let items = json["items"]
             .as_array()
-            .cloned()
-            .unwrap_or_default();
+            .unwrap_or(&empty_vec);
 
         // First pass: parse items and identify which closed PRs need Graphite checks
         struct PrCandidate {
@@ -309,7 +310,7 @@ impl GitHubIntegration {
         }
 
         let mut candidates: Vec<PrCandidate> = Vec::new();
-        for item in &items {
+        for item in items {
             let number = item["number"].as_u64().unwrap_or(0);
             let title = item["title"].as_str().unwrap_or("Untitled PR").to_string();
             let html_url = item["html_url"].as_str().unwrap_or_default().to_string();
@@ -325,9 +326,10 @@ impl GitHubIntegration {
             candidates.push(PrCandidate { number, title, html_url, repo_name, updated_str, merged_at_present, state });
         }
 
-        // Second pass: check all closed PRs for Graphite merges in parallel
+        // Second pass: check closed PRs for Graphite merges in parallel (cap at 20)
         let closed_prs: Vec<&PrCandidate> = candidates.iter()
             .filter(|c| c.state == "closed" && !c.merged_at_present)
+            .take(20)
             .collect();
 
         let mut graphite_merged: std::collections::HashSet<u64> = std::collections::HashSet::new();
@@ -541,9 +543,14 @@ fn parse_push_event(event: &GitHubEvent, occurred_at: DateTime<Utc>) -> Vec<Acti
     );
     activity.description = Some(description);
     activity.project = Some(event.repo.name.clone());
+    // Store only count and SHAs — full commit objects waste memory and DB space
+    let commit_shas: Vec<&str> = commits
+        .iter()
+        .filter_map(|c| c.get("sha").and_then(|s| s.as_str()))
+        .collect();
     activity.metadata = serde_json::json!({
         "commit_count": n,
-        "commits": commits,
+        "commit_shas": commit_shas,
     });
 
     vec![activity]
@@ -643,4 +650,121 @@ fn parse_issues_event(
     activity.project = Some(event.repo.name.clone());
 
     Some(activity)
+}
+
+// ---------------------------------------------------------------------------
+// Open / Draft PRs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OpenPr {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub repo: String,
+    pub state: String,       // "open" or "draft"
+    pub created_at: String,
+    pub updated_at: String,
+    pub labels: Vec<String>,
+    pub review_status: String, // "approved", "changes_requested", "review_required", ""
+    pub additions: u64,
+    pub deletions: u64,
+    pub cc_type: Option<String>,
+    pub cc_scope: Option<String>,
+}
+
+/// Fetch all open and draft PRs authored by the configured user.
+pub async fn fetch_open_prs(config: &crate::config::AppConfig) -> Result<Vec<OpenPr>, String> {
+    let token = crate::auth::AuthManager::get_github_token()
+        .ok()
+        .flatten()
+        .ok_or_else(|| "GitHub not connected".to_string())?;
+
+    let username_owned: String = config.github.username.clone()
+        .filter(|u| !u.is_empty())
+        .or_else(|| {
+            let gh_path = crate::auth::find_gh_binary()?;
+            std::process::Command::new(&gh_path)
+                .args(["api", "user", "--jq", ".login"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if s.is_empty() { None } else { Some(s) }
+                })
+        })
+        .ok_or_else(|| "No GitHub username configured".to_string())?;
+    let username = username_owned.as_str();
+
+    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {token}")).unwrap());
+    headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github.v3+json"));
+    headers.insert(USER_AGENT, HeaderValue::from_static("recap/0.1"));
+
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .map_err(|e| format!("Failed to build client: {e}"))?;
+
+    let query = format!("author:{username} type:pr state:open");
+    let url = format!(
+        "https://api.github.com/search/issues?q={}&sort=updated&order=desc&per_page=100",
+        urlencoding::encode(&query)
+    );
+
+    let response = client.get(&url).send().await
+        .map_err(|e| format!("GitHub request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("GitHub search error: {text}"));
+    }
+
+    let json: serde_json::Value = response.json().await
+        .map_err(|e| format!("Failed to parse response: {e}"))?;
+
+    let empty_vec = Vec::new();
+    let items = json["items"].as_array().unwrap_or(&empty_vec);
+
+    let mut prs: Vec<OpenPr> = Vec::new();
+
+    for item in items {
+        let number = item["number"].as_u64().unwrap_or(0);
+        let title = item["title"].as_str().unwrap_or("Untitled").to_string();
+        let html_url = item["html_url"].as_str().unwrap_or_default().to_string();
+        let repo_url = item["repository_url"].as_str().unwrap_or_default();
+        let repo = repo_url.rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+        let created_at = item["created_at"].as_str().unwrap_or_default().to_string();
+        let updated_at = item["updated_at"].as_str().unwrap_or_default().to_string();
+        let is_draft = item["draft"].as_bool().unwrap_or(false);
+
+        let labels: Vec<String> = item["labels"]
+            .as_array()
+            .unwrap_or(&empty_vec)
+            .iter()
+            .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
+            .collect();
+
+        let (cc_type, cc_scope) = parse_conventional_commit(&title);
+
+        prs.push(OpenPr {
+            number,
+            title,
+            url: html_url,
+            repo,
+            state: if is_draft { "draft".to_string() } else { "open".to_string() },
+            created_at,
+            updated_at,
+            labels,
+            review_status: String::new(), // would need a separate API call per PR
+            additions: 0,
+            deletions: 0,
+            cc_type,
+            cc_scope,
+        });
+    }
+
+    Ok(prs)
 }

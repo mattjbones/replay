@@ -3,7 +3,7 @@ use tokio::task::JoinSet;
 
 use crate::auth::AuthManager;
 use crate::config::AppConfig;
-use crate::db::{get_sync_cursor, is_cache_fresh, update_sync_cursor, upsert_activity};
+use crate::db::{get_sync_cursor, is_cache_fresh, update_sync_cursor, batch_upsert_activities, cleanup_expired_cache};
 use crate::db::Database;
 use crate::integrations::{Integration, IntegrationError};
 use crate::models::Source;
@@ -123,10 +123,8 @@ impl SyncScheduler {
             match outcome {
                 Ok((source, db, Ok((activities, new_cursor)))) => {
                     let count = activities.len();
-                    for activity in &activities {
-                        if let Err(e) = upsert_activity(&db, activity) {
-                            tracing::error!("failed to upsert activity: {e}");
-                        }
+                    if let Err(e) = batch_upsert_activities(&db, &activities) {
+                        tracing::error!("failed to batch upsert activities from {source}: {e}");
                     }
                     update_sync_cursor(&db, &source, &new_cursor);
                     tracing::info!("synced {count} activities from {source}");
@@ -142,6 +140,9 @@ impl SyncScheduler {
                 }
             }
         }
+
+        // Clean up expired LLM cache entries
+        cleanup_expired_cache(&self.db, self.config.ttl.cold_minutes);
     }
 
     /// Spawn a background loop that calls `run_once` on the configured interval.

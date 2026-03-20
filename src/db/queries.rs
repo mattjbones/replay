@@ -29,7 +29,11 @@ pub fn upsert_activity(db: &Database, activity: &Activity) -> rusqlite::Result<(
     Ok(())
 }
 
-/// Returns all activities whose `occurred_at` falls within [start, end), ordered by occurred_at DESC.
+/// Maximum number of activities to load in a single query.
+const ACTIVITY_LIMIT: u32 = 500;
+
+/// Returns activities whose `occurred_at` falls within [start, end), ordered by occurred_at DESC.
+/// Limited to ACTIVITY_LIMIT rows to cap memory usage.
 pub fn get_activities_for_range(
     db: &Database,
     start: DateTime<Utc>,
@@ -40,15 +44,17 @@ pub fn get_activities_for_range(
         "SELECT id, source, source_id, kind, title, description, url, project, occurred_at, metadata, synced_at
          FROM activities
          WHERE occurred_at >= ?1 AND occurred_at < ?2
-         ORDER BY occurred_at DESC",
+         ORDER BY occurred_at DESC
+         LIMIT ?3",
     )?;
 
-    let rows = stmt.query_map(params![start.to_rfc3339(), end.to_rfc3339()], row_to_activity)?;
+    let rows = stmt.query_map(params![start.to_rfc3339(), end.to_rfc3339(), ACTIVITY_LIMIT], row_to_activity)?;
 
     rows.collect()
 }
 
 /// Returns activities for a specific source within a time range, ordered by occurred_at DESC.
+/// Limited to ACTIVITY_LIMIT rows to cap memory usage.
 pub fn get_activities_by_source(
     db: &Database,
     source: &Source,
@@ -60,15 +66,46 @@ pub fn get_activities_by_source(
         "SELECT id, source, source_id, kind, title, description, url, project, occurred_at, metadata, synced_at
          FROM activities
          WHERE source = ?1 AND occurred_at >= ?2 AND occurred_at < ?3
-         ORDER BY occurred_at DESC",
+         ORDER BY occurred_at DESC
+         LIMIT ?4",
     )?;
 
     let rows = stmt.query_map(
-        params![source.to_string(), start.to_rfc3339(), end.to_rfc3339()],
+        params![source.to_string(), start.to_rfc3339(), end.to_rfc3339(), ACTIVITY_LIMIT],
         row_to_activity,
     )?;
 
     rows.collect()
+}
+
+/// Batch-insert activities in a single transaction, much faster than individual upserts.
+pub fn batch_upsert_activities(db: &Database, activities: &[Activity]) -> rusqlite::Result<()> {
+    let conn = db.conn.lock().unwrap();
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO activities
+                (id, source, source_id, kind, title, description, url, project, occurred_at, metadata, synced_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        )?;
+        for activity in activities {
+            stmt.execute(params![
+                activity.id,
+                activity.source.to_string(),
+                activity.source_id,
+                activity.kind.to_string(),
+                activity.title,
+                activity.description,
+                activity.url,
+                activity.project,
+                activity.occurred_at.to_rfc3339(),
+                activity.metadata.to_string(),
+                activity.synced_at.to_rfc3339(),
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// Upserts the sync cursor for a given source, recording the current time as last_sync.

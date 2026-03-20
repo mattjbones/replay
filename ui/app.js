@@ -26,7 +26,296 @@ const state = {
     activity: null,
     pr: null,
   },
+  gridLayout: null,
+  gridEditMode: false,
+  lastSyncTime: null,
 };
+
+// ===== Grid Layout System =====
+
+const DEFAULT_LAYOUT = {
+  "card-briefing":       { x: 1,  y: 1,  w: 6,  h: 5 },
+  "card-activity-chart": { x: 7,  y: 1,  w: 6,  h: 4 },
+  "card-pr-stats":       { x: 7,  y: 5,  w: 6,  h: 3 },
+  "card-features":       { x: 1,  y: 6,  w: 6,  h: 3 },
+  "card-linear":         { x: 1,  y: 9,  w: 12, h: 3 },
+  "card-activity-table": { x: 1,  y: 12, w: 12, h: 5 },
+};
+
+let _gridDragState = null;
+let _gridResizeState = null;
+let _saveLayoutTimer = null;
+
+function toggleEditMode() {
+  state.gridEditMode = !state.gridEditMode;
+  const main = document.getElementById("main");
+  if (state.gridEditMode) {
+    main.classList.add("grid-edit-mode");
+    dom.actionEditLayout.classList.add("edit-active");
+    dom.actionEditLayout.innerHTML = "&#x2714; Done Editing";
+    dom.actionResetLayout.classList.remove("hidden");
+  } else {
+    main.classList.remove("grid-edit-mode");
+    dom.actionEditLayout.classList.remove("edit-active");
+    dom.actionEditLayout.innerHTML = "&#x270e; Edit Layout";
+    dom.actionResetLayout.classList.add("hidden");
+  }
+}
+
+function initGridSystem() {
+  loadGridLayout();
+
+  // Inject resize handles and drag icons into each grid card (once)
+  const grid = document.getElementById("dashboard");
+  if (!grid) return;
+  const cards = grid.querySelectorAll(".card[id]");
+  cards.forEach((card) => {
+    if (!card.querySelector(".resize-handle")) {
+      const handle = document.createElement("div");
+      handle.className = "resize-handle";
+      card.appendChild(handle);
+    }
+
+    const header = card.querySelector(".card-header");
+    if (header && !header.querySelector(".drag-handle-icon")) {
+      const icon = document.createElement("span");
+      icon.className = "drag-handle-icon";
+      icon.innerHTML = "&#x2630;"; // hamburger/grip icon
+      header.prepend(icon);
+    }
+
+    // Drag: mousedown on card-header (only in edit mode)
+    if (header && !header._gridDragBound) {
+      header._gridDragBound = true;
+      header.addEventListener("mousedown", (e) => {
+        if (!state.gridEditMode) return;
+        if (e.target.closest("button")) return;
+        e.preventDefault();
+        startDrag(e, card.id);
+      });
+    }
+
+    // Resize: mousedown on handle (only in edit mode)
+    const handle = card.querySelector(".resize-handle");
+    if (handle && !handle._gridResizeBound) {
+      handle._gridResizeBound = true;
+      handle.addEventListener("mousedown", (e) => {
+        if (!state.gridEditMode) return;
+        e.preventDefault();
+        e.stopPropagation();
+        startResize(e, card.id);
+      });
+    }
+  });
+
+  applyLayout(state.gridLayout);
+}
+
+function applyLayout(layout) {
+  if (!layout) return;
+  for (const [cardId, pos] of Object.entries(layout)) {
+    const card = document.getElementById(cardId);
+    if (!card) continue;
+    card.style.gridColumn = `${pos.x} / span ${pos.w}`;
+    card.style.gridRow = `${pos.y} / span ${pos.h}`;
+  }
+}
+
+function rectsOverlap(a, b) {
+  // Grid coords: x is col start (1-based), w is span, same for y/h
+  return (
+    a.x < b.x + b.w &&
+    a.x + a.w > b.x &&
+    a.y < b.y + b.h &&
+    a.y + a.h > b.y
+  );
+}
+
+function resolveCollisions(movedCardId) {
+  // Push any card that overlaps with movedCard downward, then cascade.
+  // We iterate until no more overlaps remain (with a safety cap).
+  const layout = state.gridLayout;
+  const moved = layout[movedCardId];
+  if (!moved) return;
+
+  // Build a list of cards to check, sorted top-to-bottom by y
+  const cardIds = Object.keys(layout).filter((id) => id !== movedCardId);
+
+  // Phase 1: push anything overlapping the moved card
+  for (const otherId of cardIds) {
+    const other = layout[otherId];
+    if (rectsOverlap(moved, other)) {
+      other.y = moved.y + moved.h;
+    }
+  }
+
+  // Phase 2: cascade — repeatedly resolve pairwise overlaps top-to-bottom
+  // until stable (max 20 iterations to avoid infinite loops)
+  for (let iter = 0; iter < 20; iter++) {
+    let changed = false;
+    // Sort all cards by y so we push downward
+    const sorted = Object.keys(layout).sort(
+      (a, b) => layout[a].y - layout[b].y || layout[a].x - layout[b].x
+    );
+    for (let i = 0; i < sorted.length; i++) {
+      for (let j = i + 1; j < sorted.length; j++) {
+        const a = layout[sorted[i]];
+        const b = layout[sorted[j]];
+        if (rectsOverlap(a, b)) {
+          b.y = a.y + a.h;
+          changed = true;
+        }
+      }
+    }
+    if (!changed) break;
+  }
+}
+
+function getGridMetrics() {
+  const grid = document.getElementById("dashboard");
+  if (!grid) return { colWidth: 80, rowHeight: 96 };
+  const rect = grid.getBoundingClientRect();
+  const computedStyle = getComputedStyle(grid);
+  const gap = parseFloat(computedStyle.gap) || 16;
+  const colWidth = (rect.width - gap * 11) / 12;
+  const rowHeight = 80 + gap; // 80px row + gap
+  return { colWidth: colWidth + gap, rowHeight, gap };
+}
+
+function startDrag(e, cardId) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  const pos = { ...state.gridLayout[cardId] };
+  if (!pos) return;
+
+  _gridDragState = {
+    cardId,
+    startX: e.clientX,
+    startY: e.clientY,
+    origX: pos.x,
+    origY: pos.y,
+  };
+
+  card.classList.add("dragging");
+
+  const onMouseMove = (e) => {
+    if (!_gridDragState) return;
+    const metrics = getGridMetrics();
+    const dx = e.clientX - _gridDragState.startX;
+    const dy = e.clientY - _gridDragState.startY;
+    const deltaCols = Math.round(dx / metrics.colWidth);
+    const deltaRows = Math.round(dy / metrics.rowHeight);
+
+    const pos = state.gridLayout[cardId];
+    let newX = _gridDragState.origX + deltaCols;
+    let newY = _gridDragState.origY + deltaRows;
+
+    // Clamp
+    newX = Math.max(1, Math.min(newX, 13 - pos.w));
+    newY = Math.max(1, newY);
+
+    pos.x = newX;
+    pos.y = newY;
+    resolveCollisions(cardId);
+    applyLayout(state.gridLayout);
+  };
+
+  const onMouseUp = () => {
+    if (_gridDragState) {
+      card.classList.remove("dragging");
+      _gridDragState = null;
+      debouncedSaveLayout();
+    }
+    document.removeEventListener("mousemove", onMouseMove);
+    document.removeEventListener("mouseup", onMouseUp);
+  };
+
+  document.addEventListener("mousemove", onMouseMove);
+  document.addEventListener("mouseup", onMouseUp);
+}
+
+function startResize(e, cardId) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  const pos = { ...state.gridLayout[cardId] };
+  if (!pos) return;
+
+  _gridResizeState = {
+    cardId,
+    startX: e.clientX,
+    startY: e.clientY,
+    origW: pos.w,
+    origH: pos.h,
+  };
+
+  card.classList.add("dragging");
+
+  const onMouseMove = (e) => {
+    if (!_gridResizeState) return;
+    const metrics = getGridMetrics();
+    const dx = e.clientX - _gridResizeState.startX;
+    const dy = e.clientY - _gridResizeState.startY;
+    const deltaCols = Math.round(dx / metrics.colWidth);
+    const deltaRows = Math.round(dy / metrics.rowHeight);
+
+    const pos = state.gridLayout[cardId];
+    let newW = _gridResizeState.origW + deltaCols;
+    let newH = _gridResizeState.origH + deltaRows;
+
+    // Clamp
+    newW = Math.max(2, Math.min(newW, 13 - pos.x));
+    newH = Math.max(2, newH);
+
+    pos.w = newW;
+    pos.h = newH;
+    resolveCollisions(cardId);
+    applyLayout(state.gridLayout);
+  };
+
+  const onMouseUp = () => {
+    if (_gridResizeState) {
+      card.classList.remove("dragging");
+      _gridResizeState = null;
+      debouncedSaveLayout();
+      // Trigger Chart.js resize
+      if (state.charts.activity) state.charts.activity.resize();
+      if (state.charts.pr) state.charts.pr.resize();
+    }
+    document.removeEventListener("mousemove", onMouseMove);
+    document.removeEventListener("mouseup", onMouseUp);
+  };
+
+  document.addEventListener("mousemove", onMouseMove);
+  document.addEventListener("mouseup", onMouseUp);
+}
+
+function loadGridLayout() {
+  if (state.config && state.config.dashboard_layout && Object.keys(state.config.dashboard_layout).length > 0) {
+    state.gridLayout = JSON.parse(JSON.stringify(state.config.dashboard_layout));
+  } else {
+    state.gridLayout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
+  }
+}
+
+function saveGridLayout() {
+  if (!state.config || !state.gridLayout) return;
+  state.config.dashboard_layout = JSON.parse(JSON.stringify(state.gridLayout));
+  invoke("update_config", { config: state.config }).catch((err) => {
+    console.error("Failed to save grid layout:", err);
+  });
+}
+
+function debouncedSaveLayout() {
+  if (_saveLayoutTimer) clearTimeout(_saveLayoutTimer);
+  _saveLayoutTimer = setTimeout(saveGridLayout, 500);
+}
+
+function resetGridLayout() {
+  state.gridLayout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
+  applyLayout(state.gridLayout);
+  debouncedSaveLayout();
+  showToast("Layout reset to defaults", "success");
+}
 
 // ===== Constants =====
 
@@ -143,6 +432,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     navTabs: $$("#nav-tabs .nav-tab"),
     actionStandup: $("#action-standup"),
     actionSettings: $("#action-settings"),
+    actionEditLayout: $("#action-edit-layout"),
+    actionResetLayout: $("#action-reset-layout"),
     actionBar: $("#action-bar"),
 
     // View sections
@@ -171,10 +462,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     githubCommitCount: $("#github-commit-count"),
     githubReviewTbody: $("#github-review-tbody"),
     githubReviewCount: $("#github-review-count"),
+    githubOpenPrTbody: $("#github-open-pr-tbody"),
+    githubOpenPrCount: $("#github-open-pr-count"),
 
     // Linear view
     linearStats: $("#linear-stats"),
     linearIssueTbody: $("#linear-issue-tbody"),
+    linearOpenTbody: $("#linear-open-tbody"),
+    linearOpenCount: $("#linear-open-count"),
     linearIssueCount: $("#linear-issue-count"),
 
     // Slack view
@@ -188,10 +483,32 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderDate();
   bindEvents();
   await refreshAuthStatus();
+  // Load config first so grid layout can read it
+  try {
+    state.config = await invoke('get_config');
+  } catch {}
   await loadDashboard();
 });
 
 function bindEvents() {
+  // External link handler — Tauri blocks navigation, so open in default browser
+  document.addEventListener('click', (e) => {
+    const link = e.target.closest('a[href]');
+    if (!link) return;
+    const href = link.getAttribute('href');
+    if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
+      e.preventDefault();
+      if (window.__TAURI__?.opener?.openUrl) {
+        window.__TAURI__.opener.openUrl(href);
+      } else {
+        // Fallback for older Tauri versions
+        invoke('plugin:opener|open_url', { url: href }).catch(() => {
+          window.open(href, '_blank');
+        });
+      }
+    }
+  });
+
   // Date navigation
   document.getElementById("date-prev")?.addEventListener("click", () => navigateDate(-1));
   document.getElementById("date-next")?.addEventListener("click", () => navigateDate(1));
@@ -222,6 +539,8 @@ function bindEvents() {
 
   // Sync
   dom.syncBtn.addEventListener("click", handleSync);
+  dom.syncBtn.addEventListener("mouseenter", updateSyncTooltip);
+  updateSyncTooltip();
 
   // Briefing refresh
   dom.briefingRefresh.addEventListener("click", () => {
@@ -238,6 +557,16 @@ function bindEvents() {
   // Action bar: settings
   dom.actionSettings.addEventListener("click", () => {
     openSettingsModal();
+  });
+
+  // Action bar: edit layout toggle
+  dom.actionEditLayout.addEventListener("click", () => {
+    toggleEditMode();
+  });
+
+  // Action bar: reset layout
+  dom.actionResetLayout.addEventListener("click", () => {
+    resetGridLayout();
   });
 
   // Standup modal close
@@ -443,6 +772,9 @@ async function loadDashboard() {
     renderFeatures(features);
     renderLinearProgress(digest.activities);
     renderActivityTable(digest.activities);
+
+    // Initialize 12-column grid layout
+    initGridSystem();
 
     // Fetch LLM content async (don't block dashboard)
     fetchBriefing();
@@ -879,6 +1211,39 @@ function renderGitHubView(activities) {
     <td>${r.project ? `<span class="project-tag">${escapeHtml(r.project)}</span>` : '—'}</td>
     <td><span class="time-dim">${relativeTime(r.occurred_at)}</span></td>
   </tr>`).join('');
+
+  // Fetch open/draft PRs (independent of date range)
+  fetchOpenPrs();
+}
+
+async function fetchOpenPrs() {
+  dom.githubOpenPrTbody.innerHTML = '<tr><td colspan="5" class="no-data">Loading...</td></tr>';
+  dom.githubOpenPrCount.textContent = '';
+  try {
+    const prs = await invoke('get_open_prs');
+    dom.githubOpenPrCount.textContent = `${prs.length} PRs`;
+    if (!prs.length) {
+      dom.githubOpenPrTbody.innerHTML = '<tr><td colspan="5" class="no-data">No open PRs</td></tr>';
+      return;
+    }
+    dom.githubOpenPrTbody.innerHTML = prs.map(pr => {
+      const isDraft = pr.state === 'draft';
+      const statusClass = isDraft ? 'kind-backlog' : 'kind-open';
+      const statusLabel = isDraft ? 'Draft' : 'Open';
+      const ccHtml = pr.cc_type
+        ? `<span class="cc-tag cc-${pr.cc_type}">${pr.cc_type}${pr.cc_scope ? `(${escapeHtml(pr.cc_scope)})` : ''}</span>`
+        : '<span style="color:var(--text-muted)">—</span>';
+      return `<tr>
+        <td><span class="kind-badge ${statusClass}">${statusLabel}</span></td>
+        <td>${ccHtml}</td>
+        <td style="max-width:400px">${pr.url ? `<a class="activity-title-link" href="${escapeAttr(pr.url)}" target="_blank">${escapeHtml(pr.title)}</a>` : escapeHtml(pr.title)}</td>
+        <td><span class="project-tag">${escapeHtml(pr.repo)}</span></td>
+        <td><span class="time-dim">${relativeTime(pr.updated_at)}</span></td>
+      </tr>`;
+    }).join('');
+  } catch (err) {
+    dom.githubOpenPrTbody.innerHTML = `<tr><td colspan="5" class="no-data">${escapeHtml(String(err))}</td></tr>`;
+  }
 }
 
 function renderPrTable(prs, ccFilter, statusFilter) {
@@ -957,6 +1322,38 @@ function renderLinearView(activities) {
   }
 
   renderLinearTable(activities, 'all');
+
+  // Fetch open tickets (independent of date range)
+  fetchOpenTickets();
+}
+
+async function fetchOpenTickets() {
+  dom.linearOpenTbody.innerHTML = '<tr><td colspan="6" class="no-data">Loading...</td></tr>';
+  dom.linearOpenCount.textContent = '';
+  try {
+    const tickets = await invoke('get_open_tickets');
+    dom.linearOpenCount.textContent = `${tickets.length} tickets`;
+    if (!tickets.length) {
+      dom.linearOpenTbody.innerHTML = '<tr><td colspan="6" class="no-data">No open tickets</td></tr>';
+      return;
+    }
+    dom.linearOpenTbody.innerHTML = tickets.map(t => {
+      const stateClass = t.state_type === 'started' ? 'state-started' : 'state-backlog';
+      const priorityClass = t.priority_label.toLowerCase().includes('urgent') ? 'urgent'
+        : t.priority_label.toLowerCase().includes('high') ? 'high'
+        : t.priority_label.toLowerCase().includes('medium') ? 'medium' : 'low';
+      return `<tr>
+        <td>${t.url ? `<a href="${escapeAttr(t.url)}" target="_blank" class="kind-badge kind-issue" style="text-decoration:none">${escapeHtml(t.identifier)}</a>` : `<span class="kind-badge kind-issue">${escapeHtml(t.identifier)}</span>`}</td>
+        <td style="max-width:300px">${t.url ? `<a class="activity-title-link" href="${escapeAttr(t.url)}" target="_blank">${escapeHtml(t.title)}</a>` : escapeHtml(t.title)}</td>
+        <td><span class="state-badge ${stateClass}">${escapeHtml(t.state)}</span></td>
+        <td><span class="priority-badge ${priorityClass}">${escapeHtml(t.priority_label)}</span></td>
+        <td>${t.team ? escapeHtml(t.team) : '—'}</td>
+        <td><span class="time-dim">${relativeTime(t.updated_at)}</span></td>
+      </tr>`;
+    }).join('');
+  } catch (err) {
+    dom.linearOpenTbody.innerHTML = `<tr><td colspan="6" class="no-data">${escapeHtml(String(err))}</td></tr>`;
+  }
 }
 
 function renderLinearTable(activities, filter) {
@@ -1142,11 +1539,43 @@ function renderSettingsConnections() {
       </div>
     </div>`;
   }
+  // Anthropic API key (for LLM summaries when claude CLI is unavailable)
+  const anthropicConnected = state.authStatus.anthropic;
+  html += `<div class="auth-source">
+    <div class="auth-dot ${anthropicConnected ? 'connected' : 'disconnected'}"></div>
+    <div class="auth-info">
+      <div class="auth-name">Anthropic</div>
+      ${anthropicConnected
+        ? '<div class="auth-helper" style="color:#34d058;">API key configured</div>'
+        : `<div class="auth-helper">Required for LLM summaries &amp; standup generation. Get a key from the Anthropic Console.</div>
+           <div class="auth-input-row">
+             <input type="password" class="auth-input" id="token-anthropic" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+             <button class="btn btn-small btn-highlight" id="save-anthropic-key">Save</button>
+           </div>`
+      }
+    </div>
+  </div>`;
+
   dom.settingsAuthList.innerHTML = html;
   // Bind save buttons
   dom.settingsAuthList.querySelectorAll('[data-save-token]').forEach(btn => {
     btn.addEventListener('click', () => saveToken(btn.dataset.saveToken));
   });
+  const anthropicBtn = dom.settingsAuthList.querySelector('#save-anthropic-key');
+  if (anthropicBtn) {
+    anthropicBtn.addEventListener('click', async () => {
+      const key = document.getElementById('token-anthropic')?.value?.trim();
+      if (!key) { showToast('Please enter an API key.', 'error'); return; }
+      try {
+        await invoke('save_anthropic_key', { key });
+        showToast('Anthropic API key saved!', 'success');
+        await refreshAuthStatus();
+        renderSettingsConnections();
+      } catch (err) {
+        showToast(`Failed to save key: ${err}`, 'error');
+      }
+    });
+  }
   const exchangeBtn = dom.settingsAuthList.querySelector('#slack-exchange-btn');
   if (exchangeBtn) {
     exchangeBtn.addEventListener('click', exchangeSlackToken);
@@ -1256,6 +1685,15 @@ async function savePreferences() {
 
 // ===== Sync =====
 
+function updateSyncTooltip() {
+  if (!state.lastSyncTime) {
+    dom.syncBtn.title = "Never synced";
+    return;
+  }
+  const ago = relativeTime(state.lastSyncTime.toISOString());
+  dom.syncBtn.title = `Last synced: ${ago}`;
+}
+
 async function handleSync() {
   dom.syncBtn.disabled = true;
   dom.syncBtn.classList.add("syncing");
@@ -1263,6 +1701,8 @@ async function handleSync() {
 
   try {
     const msg = await invoke("trigger_sync");
+    state.lastSyncTime = new Date();
+    updateSyncTooltip();
     showToast(msg || "Sync complete", "success");
     await refreshAuthStatus();
     await loadDashboard();

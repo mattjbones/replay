@@ -48,3 +48,18 @@ pub fn set_cached_summary(db: &Database, cache_key: &str, summary: &str) {
     )
     .expect("failed to set cached summary");
 }
+
+/// Delete all expired llm_cache entries older than `ttl_minutes`.
+pub fn cleanup_expired_cache(db: &Database, ttl_minutes: i64) {
+    let conn = db.conn.lock().unwrap();
+    let cutoff = (Utc::now() - Duration::minutes(ttl_minutes)).to_rfc3339();
+    let deleted = conn
+        .execute(
+            "DELETE FROM llm_cache WHERE created_at <= ?1",
+            params![cutoff],
+        )
+        .unwrap_or(0);
+    if deleted > 0 {
+        tracing::debug!("cleaned up {deleted} expired llm_cache entries");
+    }
+}

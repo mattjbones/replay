@@ -8,7 +8,6 @@ pub mod llm;
 pub mod models;
 pub mod notifications;
 pub mod sync;
-pub mod tray;
 
 use std::sync::Arc;
 
@@ -32,13 +31,14 @@ pub fn run() {
 
     let state = AppState {
         db: db.clone(),
-        config: config.clone(),
+        config: std::sync::Mutex::new(config.clone()),
     };
 
     tracing::info!("building tauri app...");
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(state)
         .setup(move |app| {
             tracing::info!("tauri setup callback running");
@@ -53,10 +53,6 @@ pub fn run() {
                 tracing::info!("main window ready");
                 let _ = window.set_focus();
             }
-
-            tracing::info!("setting up tray...");
-            tray::setup_tray(app)?;
-            tracing::info!("tray setup complete");
 
             // Start background sync.
             let sync_db = db.clone();
@@ -80,6 +76,7 @@ pub fn run() {
             commands::get_auth_status,
             commands::save_token,
             commands::save_slack_refresh_token,
+            commands::save_anthropic_key,
             commands::exchange_slack_refresh_token,
             commands::clear_cache,
             commands::trigger_sync,
@@ -89,6 +86,8 @@ pub fn run() {
             commands::get_chart_data,
             commands::get_feature_breakdown,
             commands::get_standup,
+            commands::get_open_tickets,
+            commands::get_open_prs,
         ]);
 
     tracing::info!("calling tauri::Builder::run()...");
