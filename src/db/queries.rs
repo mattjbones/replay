@@ -152,6 +152,28 @@ pub fn query_weekly_velocity(
     rows.collect()
 }
 
+/// Activities for a specific day-of-week + hour (used by heatmap drill-down).
+/// `dow` is 0=Sun..6=Sat, `hour` is 0..23. Looks back from `since`.
+pub fn get_activities_for_dow_hour(
+    db: &Database,
+    since: DateTime<Utc>,
+    dow: i32,
+    hour: i32,
+) -> rusqlite::Result<Vec<Activity>> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT id, source, source_id, kind, title, description, url, project, occurred_at, metadata, synced_at
+         FROM activities
+         WHERE occurred_at >= ?1
+           AND CAST(strftime('%w', occurred_at) AS INTEGER) = ?2
+           AND CAST(strftime('%H', occurred_at) AS INTEGER) = ?3
+         ORDER BY occurred_at DESC
+         LIMIT 100",
+    )?;
+    let rows = stmt.query_map(params![since.to_rfc3339(), dow, hour], row_to_activity)?;
+    rows.collect()
+}
+
 /// Activity heatmap: day-of-week (0=Sun) x hour-of-day.
 pub fn query_activity_heatmap(
     db: &Database,

@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-14
+            target: aarch64-apple-darwin
+            arch: aarch64
+          - platform: macos-13
+            target: x86_64-apple-darwin
+            arch: x86_64
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version matches tag
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          CONF_VERSION=$(python3 -c "import json; print(json.load(open('tauri.conf.json'))['version'])")
+          if [ "$TAG_VERSION" != "$CONF_VERSION" ]; then
+            echo "ERROR: Tag version ($TAG_VERSION) does not match tauri.conf.json ($CONF_VERSION)"
+            exit 1
+          fi
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Generate .icns from icon.png
+        run: |
+          mkdir -p icons/icon.iconset
+          sips -z 16 16     icons/icon.png --out icons/icon.iconset/icon_16x16.png
+          sips -z 32 32     icons/icon.png --out icons/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32     icons/icon.png --out icons/icon.iconset/icon_32x32.png
+          sips -z 64 64     icons/icon.png --out icons/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128   icons/icon.png --out icons/icon.iconset/icon_128x128.png
+          sips -z 256 256   icons/icon.png --out icons/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256   icons/icon.png --out icons/icon.iconset/icon_256x256.png
+          sips -z 512 512   icons/icon.png --out icons/icon.iconset/icon_256x256@2x.png
+          sips -z 512 512   icons/icon.png --out icons/icon.iconset/icon_512x512.png
+          sips -z 1024 1024 icons/icon.png --out icons/icon.iconset/icon_512x512@2x.png
+          iconutil -c icns icons/icon.iconset -o icons/icon.icns
+
+      - name: Build Tauri app
+        run: cargo tauri build --target ${{ matrix.target }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Ad-hoc codesign
+        run: |
+          APP_PATH=$(find target/${{ matrix.target }}/release/bundle/macos -name "*.app" -maxdepth 1)
+          if [ -n "$APP_PATH" ]; then
+            codesign --force --deep -s - "$APP_PATH"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: recap-${{ matrix.arch }}
+          path: |
+            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+
+          # DMGs
+          find artifacts/recap-aarch64 -name "*.dmg" -exec cp {} release-assets/Recap_aarch64.dmg \;
+          find artifacts/recap-x86_64 -name "*.dmg" -exec cp {} release-assets/Recap_x86_64.dmg \;
+
+          # Updater bundles (.app.tar.gz)
+          find artifacts/recap-aarch64 -name "*.app.tar.gz" ! -name "*.sig" -exec cp {} release-assets/Recap_aarch64.app.tar.gz \;
+          find artifacts/recap-x86_64 -name "*.app.tar.gz" ! -name "*.sig" -exec cp {} release-assets/Recap_x86_64.app.tar.gz \;
+
+          # Signatures
+          find artifacts/recap-aarch64 -name "*.app.tar.gz.sig" -exec cp {} release-assets/Recap_aarch64.app.tar.gz.sig \;
+          find artifacts/recap-x86_64 -name "*.app.tar.gz.sig" -exec cp {} release-assets/Recap_x86_64.app.tar.gz.sig \;
+
+      - name: Generate latest.json for updater
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          AARCH64_SIG=$(cat release-assets/Recap_aarch64.app.tar.gz.sig)
+          X86_64_SIG=$(cat release-assets/Recap_x86_64.app.tar.gz.sig)
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          cat > release-assets/latest.json << EOF
+          {
+            "version": "${VERSION}",
+            "notes": "Release v${VERSION}",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${AARCH64_SIG}",
+                "url": "https://github.com/mattjbones/replay/releases/download/v${VERSION}/Recap_aarch64.app.tar.gz"
+              },
+              "darwin-x86_64": {
+                "signature": "${X86_64_SIG}",
+                "url": "https://github.com/mattjbones/replay/releases/download/v${VERSION}/Recap_x86_64.app.tar.gz"
+              }
+            }
+          }
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            | Architecture | Download |
+            |---|---|
+            | Apple Silicon (M1/M2/M3/M4) | [Recap_aarch64.dmg](https://github.com/mattjbones/replay/releases/download/${{ github.ref_name }}/Recap_aarch64.dmg) |
+            | Intel | [Recap_x86_64.dmg](https://github.com/mattjbones/replay/releases/download/${{ github.ref_name }}/Recap_x86_64.dmg) |
+
+            > **Note:** This app is not notarized with Apple. On first launch, right-click the app and select "Open", then confirm in the dialog.
+
+            Existing installations will be prompted to auto-update on next launch.
+          files: |
+            release-assets/*

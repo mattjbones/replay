@@ -39,6 +39,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
         .setup(move |app| {
             tracing::info!("tauri setup callback running");
@@ -90,6 +91,7 @@ pub fn run() {
             commands::get_open_prs,
             commands::get_trends_data,
             commands::get_trends_ai_summary,
+            commands::get_heatmap_activities,
         ]);
 
     tracing::info!("calling tauri::Builder::run()...");

@@ -49,6 +49,17 @@ pub fn set_cached_summary(db: &Database, cache_key: &str, summary: &str) {
     .expect("failed to set cached summary");
 }
 
+/// Delete all LLM cache entries so summaries are regenerated on next request.
+pub fn invalidate_all_summaries(db: &Database) {
+    let conn = db.conn.lock().unwrap();
+    let deleted = conn
+        .execute("DELETE FROM llm_cache", [])
+        .unwrap_or(0);
+    if deleted > 0 {
+        tracing::info!("invalidated {deleted} cached LLM summaries");
+    }
+}
+
 /// Delete all expired llm_cache entries older than `ttl_minutes`.
 pub fn cleanup_expired_cache(db: &Database, ttl_minutes: i64) {
     let conn = db.conn.lock().unwrap();
