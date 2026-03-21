@@ -655,18 +655,19 @@ function switchView(view) {
   // Show target
   const el = document.getElementById(`view-${view}`);
   if (el) el.style.display = '';
-  // Hide date controls + period tabs on Trends (it's always trailing 12 weeks)
+  // Hide date controls + period tabs on Trends/coming-soon tabs
   const dateNav = document.querySelector('.date-nav');
   const tabBar = document.getElementById('tab-bar');
-  if (view === 'trends') {
+  const hideDateControls = view === 'trends' || view === 'slack' || view === 'notion';
+  if (hideDateControls) {
     if (dateNav) dateNav.style.display = 'none';
     if (tabBar) tabBar.style.display = 'none';
   } else {
     if (dateNav) dateNav.style.display = '';
     if (tabBar) tabBar.style.display = '';
   }
-  // Load data
-  loadViewData(view);
+  // Load data (skip for coming-soon views)
+  if (view !== 'slack' && view !== 'notion') loadViewData(view);
 }
 
 function loadViewData(view) {
@@ -1658,6 +1659,12 @@ async function exchangeSlackToken() {
 function renderSettingsPrefs() {
   if (!state.config) { dom.settingsPrefs.innerHTML = ''; return; }
   const c = state.config;
+  const wh = c.working_hours || {};
+  const workingDays = wh.working_days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+  const allDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const dayCheckboxes = allDays.map(d =>
+    `<label class="pref-day-label"><input type="checkbox" class="pref-day-cb" value="${d}"${workingDays.includes(d) ? ' checked' : ''}> ${d}</label>`
+  ).join('');
   dom.settingsPrefs.innerHTML = `
     <div class="pref-row">
       <label class="pref-label">Sync interval (min)</label>
@@ -1680,39 +1687,59 @@ function renderSettingsPrefs() {
       <input class="pref-input" type="text" id="pref-ignored-channels" value="${escapeAttr((c.slack?.ignored_channels || []).join(', '))}" placeholder="github-prs, graphite-*">
       <div class="pref-hint">Comma-separated, supports glob patterns</div>
     </div>
+    <div class="pref-section-divider">Working Hours</div>
+    <div class="pref-row">
+      <label class="pref-label">Work start</label>
+      <input class="pref-input pref-input-time" type="time" id="pref-work-start" value="${escapeAttr(wh.work_start || '09:00')}">
+    </div>
+    <div class="pref-row">
+      <label class="pref-label">Work end</label>
+      <input class="pref-input pref-input-time" type="time" id="pref-work-end" value="${escapeAttr(wh.work_end || '17:00')}">
+    </div>
+    <div class="pref-row pref-row-days">
+      <label class="pref-label">Working days</label>
+      <div class="pref-days">${dayCheckboxes}</div>
+    </div>
+    <div class="pref-row">
+      <label class="pref-label">Timezone</label>
+      <input class="pref-input" type="text" id="pref-timezone" value="${escapeAttr(wh.timezone || 'UTC')}" placeholder="UTC, Europe/London, America/New_York…">
+      <div class="pref-hint">IANA timezone name</div>
+    </div>
     <div class="pref-save-row">
-      <button class="btn btn-highlight" id="pref-save-btn">Save Preferences</button>
+      <button class="btn" id="pref-save-btn">Save Preferences</button>
     </div>
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
       <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Clear all synced activities, LLM summaries, and sync cursors. Tokens are kept.</div>
-      <button class="btn" id="pref-clear-cache-btn" style="background:var(--highlight)">Clear Cached Data</button>
+      <button class="btn btn-danger" id="pref-clear-cache-btn">Clear Cached Data</button>
     </div>
   `;
   document.getElementById('pref-save-btn')?.addEventListener('click', savePreferences);
   const clearBtn = document.getElementById('pref-clear-cache-btn');
   if (clearBtn) {
-    clearBtn.addEventListener('click', async () => {
-      console.log('clear cache button clicked');
-      clearBtn.disabled = true;
-      clearBtn.textContent = 'Clearing...';
-      try {
-        await invoke('clear_cache');
-        state.digest = null;
-        state.llmCache = {};
-        state.standupCache = {};
-        clearBtn.textContent = 'Cleared!';
-        showToast('Cache cleared! Hit Sync to re-fetch.', 'success');
-      } catch (err) {
-        console.error('clear_cache failed:', err);
-        clearBtn.textContent = 'Clear Cached Data';
-        showToast(`Failed to clear cache: ${err}`, 'error');
-      } finally {
-        clearBtn.disabled = false;
-        setTimeout(() => { clearBtn.textContent = 'Clear Cached Data'; }, 2000);
-      }
+    clearBtn.addEventListener('click', () => {
+      showConfirmDialog(
+        'Clear Cached Data',
+        'This will remove all synced activities, LLM summaries, and sync cursors. Your API tokens will be kept. Are you sure?',
+        async () => {
+          clearBtn.disabled = true;
+          clearBtn.textContent = 'Clearing...';
+          try {
+            await invoke('clear_cache');
+            state.digest = null;
+            state.llmCache = {};
+            state.standupCache = {};
+            clearBtn.textContent = 'Cleared!';
+            showToast('Cache cleared! Hit Sync to re-fetch.', 'success');
+          } catch (err) {
+            console.error('clear_cache failed:', err);
+            showToast(`Failed to clear cache: ${err}`, 'error');
+          } finally {
+            clearBtn.disabled = false;
+            setTimeout(() => { clearBtn.textContent = 'Clear Cached Data'; }, 2000);
+          }
+        }
+      );
     });
-  } else {
-    console.warn('pref-clear-cache-btn not found');
   }
 }
 
@@ -1726,6 +1753,13 @@ async function savePreferences() {
   state.config.slack.user_id = slackUserId || null;
   const ignoredStr = document.getElementById('pref-ignored-channels')?.value || '';
   state.config.slack.ignored_channels = ignoredStr.split(',').map(s => s.trim()).filter(Boolean);
+  // Working hours
+  if (!state.config.working_hours) state.config.working_hours = {};
+  state.config.working_hours.work_start = document.getElementById('pref-work-start')?.value || '09:00';
+  state.config.working_hours.work_end = document.getElementById('pref-work-end')?.value || '17:00';
+  state.config.working_hours.timezone = document.getElementById('pref-timezone')?.value?.trim() || 'UTC';
+  const checkedDays = [...document.querySelectorAll('.pref-day-cb:checked')].map(cb => cb.value);
+  state.config.working_hours.working_days = checkedDays;
   try {
     await invoke('update_config', { config: state.config });
     showToast('Preferences saved!', 'success');
@@ -1789,6 +1823,27 @@ function renderMarkdown(text) {
 // ===== Toast =====
 
 let toastTimer = null;
+
+function showConfirmDialog(title, message, onConfirm) {
+  const overlay = document.getElementById('confirm-overlay');
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-message').textContent = message;
+  overlay.style.display = '';
+  const okBtn = document.getElementById('confirm-ok');
+  const cancelBtn = document.getElementById('confirm-cancel');
+  const close = () => { overlay.style.display = 'none'; };
+  const handleOk = () => { close(); onConfirm(); cleanup(); };
+  const handleCancel = () => { close(); cleanup(); };
+  const handleOverlay = (e) => { if (e.target === overlay) { close(); cleanup(); } };
+  function cleanup() {
+    okBtn.removeEventListener('click', handleOk);
+    cancelBtn.removeEventListener('click', handleCancel);
+    overlay.removeEventListener('click', handleOverlay);
+  }
+  okBtn.addEventListener('click', handleOk);
+  cancelBtn.addEventListener('click', handleCancel);
+  overlay.addEventListener('click', handleOverlay);
+}
 
 function showToast(message, type = "info") {
   if (toastTimer) clearTimeout(toastTimer);

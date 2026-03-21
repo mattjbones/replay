@@ -1802,6 +1802,129 @@ body {
   margin: 2px 0;
 }
 
+/* ===== Danger Button ===== */
+.btn-danger {
+  background: var(--highlight);
+}
+
+.btn-danger:hover {
+  background: #d63a54;
+}
+
+/* ===== Secondary Button ===== */
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--text);
+}
+
+/* ===== Confirm Dialog ===== */
+.confirm-modal {
+  width: 400px;
+}
+
+/* ===== Coming Soon View ===== */
+.coming-soon-view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  padding: 40px;
+}
+
+.coming-soon-content {
+  display: flex;
+  align-items: center;
+  gap: 48px;
+  max-width: 640px;
+}
+
+.coming-soon-robot {
+  width: 120px;
+  height: 140px;
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+
+.coming-soon-text h2 {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.coming-soon-badge {
+  display: inline-block;
+  background: var(--accent);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 20px;
+  margin-bottom: 14px;
+}
+
+.coming-soon-desc {
+  font-size: 14px;
+  color: var(--text-dim);
+  line-height: 1.65;
+}
+
+/* ===== Nav tab active colours for new tabs ===== */
+.nav-tab.active[data-view="slack"]  { border-bottom-color: var(--slack); }
+.nav-tab.active[data-view="notion"] { border-bottom-color: var(--notion); }
+
+/* ===== Settings: working hours & new pref styles ===== */
+.pref-section-divider {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 14px 0 6px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.pref-input-time {
+  width: 120px;
+  color-scheme: dark;
+}
+
+.pref-row-days {
+  align-items: flex-start;
+  padding-top: 6px;
+}
+
+.pref-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pref-day-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.pref-day-label input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
 /* ===== Utility ===== */
 .hidden {
   display: none !important;
