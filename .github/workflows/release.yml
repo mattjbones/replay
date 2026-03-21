@@ -1,9 +1,11 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
 
 jobs:
   build:
@@ -23,12 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Inject version from tag
+      - name: Inject version
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION="${{ inputs.version }}"
           echo "Building version: $VERSION"
           sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
-          tmp=$(mktemp)
           python3 -c "
           import json
           with open('tauri.conf.json') as f: c = json.load(f)
@@ -86,7 +87,7 @@ jobs:
             target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
             target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
 
-  release:
+  publish:
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -118,7 +119,7 @@ jobs:
 
       - name: Generate latest.json for updater
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION="${{ inputs.version }}"
           AARCH64_SIG=$(cat release-assets/Recap_aarch64.app.tar.gz.sig)
           X86_64_SIG=$(cat release-assets/Recap_x86_64.app.tar.gz.sig)
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -144,6 +145,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: "v${{ inputs.version }}"
           draft: false
           prerelease: false
           generate_release_notes: true
@@ -152,8 +154,8 @@ jobs:
 
             | Architecture | Download |
             |---|---|
-            | Apple Silicon (M1/M2/M3/M4) | [Recap_aarch64.dmg](https://github.com/mattjbones/replay/releases/download/${{ github.ref_name }}/Recap_aarch64.dmg) |
-            | Intel | [Recap_x86_64.dmg](https://github.com/mattjbones/replay/releases/download/${{ github.ref_name }}/Recap_x86_64.dmg) |
+            | Apple Silicon (M1/M2/M3/M4) | [Recap_aarch64.dmg](https://github.com/mattjbones/replay/releases/download/v${{ inputs.version }}/Recap_aarch64.dmg) |
+            | Intel | [Recap_x86_64.dmg](https://github.com/mattjbones/replay/releases/download/v${{ inputs.version }}/Recap_x86_64.dmg) |
 
             > **Note:** This app is not notarized with Apple. On first launch, right-click the app and select "Open", then confirm in the dialog.
 

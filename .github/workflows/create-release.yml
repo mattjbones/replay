@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.value }}
 
     steps:
       - uses: actions/checkout@v4
@@ -64,3 +66,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "v${{ steps.version.outputs.value }}"
           git push origin "v${{ steps.version.outputs.value }}"
+
+  release:
+    needs: create-tag
+    uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.create-tag.outputs.version }}
+    secrets: inherit
