@@ -23,14 +23,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate version matches tag
+      - name: Inject version from tag
         run: |
-          TAG_VERSION=${GITHUB_REF#refs/tags/v}
-          CONF_VERSION=$(python3 -c "import json; print(json.load(open('tauri.conf.json'))['version'])")
-          if [ "$TAG_VERSION" != "$CONF_VERSION" ]; then
-            echo "ERROR: Tag version ($TAG_VERSION) does not match tauri.conf.json ($CONF_VERSION)"
-            exit 1
-          fi
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "Building version: $VERSION"
+          sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          tmp=$(mktemp)
+          python3 -c "
+          import json
+          with open('tauri.conf.json') as f: c = json.load(f)
+          c['version'] = '$VERSION'
+          with open('tauri.conf.json', 'w') as f: json.dump(c, f, indent=2)
+          "
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

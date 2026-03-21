@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (e.g. 0.3.0)"
-        required: true
+        description: "Version override (leave blank to auto-calculate from conventional commits)"
+        required: false
         type: string
 
 jobs:
@@ -16,36 +16,51 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Validate version format
+      - name: Calculate version from conventional commits
+        id: semver
+        if: inputs.version == ''
+        uses: ietf-tools/semver-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: main
+
+      - name: Determine version
+        id: version
         run: |
-          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "ERROR: Version must be in semver format (e.g. 0.3.0)"
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "value=${{ inputs.version }}" >> $GITHUB_OUTPUT
+            echo "Using manual version: ${{ inputs.version }}"
+          else
+            AUTO="${{ steps.semver.outputs.nextStrict }}"
+            echo "value=${AUTO}" >> $GITHUB_OUTPUT
+            echo "Auto-calculated version: ${AUTO}"
+          fi
+
+      - name: Validate version
+        run: |
+          VERSION="${{ steps.version.outputs.value }}"
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: Could not determine version. Provide one manually or ensure there are conventional commits since the last tag."
+            exit 1
+          fi
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: Version '$VERSION' is not valid semver (e.g. 0.3.0)"
             exit 1
           fi
 
       - name: Check tag does not already exist
         run: |
-          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
-            echo "ERROR: Tag v${{ inputs.version }} already exists"
+          if git rev-parse "v${{ steps.version.outputs.value }}" >/dev/null 2>&1; then
+            echo "ERROR: Tag v${{ steps.version.outputs.value }} already exists"
             exit 1
           fi
 
-      - name: Update version in Cargo.toml
-        run: sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' Cargo.toml
-
-      - name: Update version in tauri.conf.json
-        run: |
-          tmp=$(mktemp)
-          jq '.version = "${{ inputs.version }}"' tauri.conf.json > "$tmp" && mv "$tmp" tauri.conf.json
-
-      - name: Commit and tag
+      - name: Create tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml tauri.conf.json
-          git commit -m "release: v${{ inputs.version }}"
-          git tag "v${{ inputs.version }}"
-
-      - name: Push commit and tag
-        run: git push origin HEAD:main --tags
+          git tag "v${{ steps.version.outputs.value }}"
+          git push origin "v${{ steps.version.outputs.value }}"
