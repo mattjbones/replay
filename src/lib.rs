@@ -39,6 +39,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
         .setup(move |app| {
             tracing::info!("tauri setup callback running");

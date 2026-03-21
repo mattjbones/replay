@@ -9,6 +9,27 @@ async function invoke(cmd, args = {}) {
   }
 }
 
+// ===== Auto-Update =====
+
+async function checkForUpdates() {
+  try {
+    const { check } = window.__TAURI__.updater;
+    const update = await check();
+    if (update?.available) {
+      const shouldUpdate = confirm(
+        `A new version (${update.version}) is available. Update now?`
+      );
+      if (shouldUpdate) {
+        await update.downloadAndInstall();
+        const { relaunch } = window.__TAURI__.process;
+        await relaunch();
+      }
+    }
+  } catch (e) {
+    console.warn("Update check failed:", e);
+  }
+}
+
 // ===== State =====
 
 const state = {
@@ -511,6 +532,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     state.config = await invoke('get_config');
   } catch {}
   await loadDashboard();
+
+  // Check for updates after UI is loaded
+  setTimeout(checkForUpdates, 5000);
 });
 
 function bindEvents() {
