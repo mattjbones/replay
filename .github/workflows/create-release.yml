@@ -69,6 +69,8 @@ jobs:
 
   release:
     needs: create-tag
+    permissions:
+      contents: write
     uses: ./.github/workflows/release.yml
     with:
       version: ${{ needs.create-tag.outputs.version }}
