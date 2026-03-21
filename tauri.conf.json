@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicoe/tauri/dev/crates/tauri-utils/schema.json",
   "productName": "Recap",
-  "version": "0.2.0",
+  "version": "0.0.0",
   "identifier": "com.recap.desktop",
   "build": {
     "frontendDist": "./ui"
