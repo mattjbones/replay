@@ -473,6 +473,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     settingsAuthList: $("#settings-auth-list"),
     settingsPrefs: $("#settings-prefs"),
 
+    // Modals (for ESC-to-close)
+    confirmOverlay: $("#confirm-overlay"),
+    heatmapDetailOverlay: $("#heatmap-detail-overlay"),
+
     // GitHub view
     githubStats: $("#github-stats"),
     githubPrTbody: $("#github-pr-tbody"),
@@ -644,12 +648,29 @@ function bindEvents() {
   dom.authBannerBtn.addEventListener("click", () => {
     openSettingsModal();
   });
+
+  // ESC key closes open modals (topmost first)
+  const modals = [dom.confirmOverlay, dom.heatmapDetailOverlay, dom.standupOverlay, dom.settingsOverlay];
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    for (const m of modals) {
+      if (m && m.style.display !== "none") {
+        m.style.display = "none";
+        e.stopPropagation();
+        return;
+      }
+    }
+  });
 }
 
 // ===== View Switching =====
 
 function switchView(view) {
   state.activeView = view;
+  // Exit edit mode if leaving overview
+  if (view !== 'overview' && state.gridEditMode) {
+    toggleEditMode();
+  }
   // Hide all view sections
   document.querySelectorAll('.view-section').forEach(s => s.style.display = 'none');
   // Show target
@@ -660,12 +681,14 @@ function switchView(view) {
   const tabBar = document.getElementById('tab-bar');
   const hideDateControls = view === 'trends' || view === 'slack' || view === 'notion';
   if (hideDateControls) {
-    if (dateNav) dateNav.style.display = 'none';
-    if (tabBar) tabBar.style.display = 'none';
+    if (dateNav) { dateNav.style.visibility = 'hidden'; dateNav.style.pointerEvents = 'none'; }
+    if (tabBar) { tabBar.style.visibility = 'hidden'; tabBar.style.pointerEvents = 'none'; }
   } else {
-    if (dateNav) dateNav.style.display = '';
-    if (tabBar) tabBar.style.display = '';
+    if (dateNav) { dateNav.style.visibility = ''; dateNav.style.pointerEvents = ''; }
+    if (tabBar) { tabBar.style.visibility = ''; tabBar.style.pointerEvents = ''; }
   }
+  // Edit layout only applies to overview
+  dom.actionEditLayout.style.display = view === 'overview' ? '' : 'none';
   // Load data (skip for coming-soon views)
   if (view !== 'slack' && view !== 'notion') loadViewData(view);
 }
@@ -731,18 +754,8 @@ async function refreshAuthStatus() {
 }
 
 function renderAuthBanner() {
-  const sources = ["github", "linear", "slack", "notion"];
-  const disconnected = sources.filter((s) => !state.authStatus[s]);
-
-  if (disconnected.length === 0) {
-    dom.authBanner.style.display = "none";
-    return;
-  }
-
-  dom.authBanner.style.display = "";
-  const names = disconnected.map((s) => SOURCE_META[s]?.label || s).join(", ");
-  dom.authBannerText.innerHTML =
-    `&#x26a0; ${disconnected.length} service${disconnected.length > 1 ? "s" : ""} not connected (${names})`;
+  // Auth warnings are now shown only in the Settings modal
+  dom.authBanner.style.display = "none";
 }
 
 async function saveToken(source) {
@@ -1562,6 +1575,13 @@ async function openSettingsModal() {
 
 function renderSettingsConnections() {
   let html = '';
+  // Show disconnected-services warning inside settings
+  const sources = ["github", "linear", "slack", "notion"];
+  const disconnected = sources.filter((s) => !state.authStatus[s]);
+  if (disconnected.length > 0) {
+    const names = disconnected.map((s) => SOURCE_META[s]?.label || s).join(", ");
+    html += `<div class="settings-auth-warning">&#x26a0; ${disconnected.length} service${disconnected.length > 1 ? "s" : ""} not connected (${names})</div>`;
+  }
   for (const [source, meta] of Object.entries(SOURCE_META)) {
     const connected = state.authStatus[source];
     html += `<div class="auth-source">
@@ -1789,8 +1809,14 @@ async function handleSync() {
     state.lastSyncTime = new Date();
     updateSyncTooltip();
     showToast(msg || "Sync complete", "success");
+    // Clear in-memory caches so summaries regenerate with fresh data
+    state.llmCache = {};
+    state.standupCache = {};
+    state.briefingText = null;
     await refreshAuthStatus();
     await loadDashboard();
+    // Retrigger briefing / summary generation with fresh data
+    fetchBriefing();
   } catch (err) {
     showToast(`Sync failed: ${err}`, "error");
   } finally {
@@ -2194,11 +2220,94 @@ function renderHeatmap(cells) {
       const count = grid[d][h];
       const intensity = count / max;
       const bg = `rgba(163, 113, 247, ${0.05 + intensity * 0.9})`;
-      html += `<div class="heatmap-cell" style="background:${bg}" title="${days[d]} ${h}:00 — ${count} activities"></div>`;
+      html += `<div class="heatmap-cell" data-dow="${d}" data-hour="${h}" style="background:${bg}" title="${days[d]} ${h}:00 — ${count} activities"></div>`;
     }
   }
   html += '</div>';
   dom.heatmapContainer.innerHTML = html;
+
+  // Click handler for drill-down
+  dom.heatmapContainer.querySelectorAll('.heatmap-cell').forEach(cell => {
+    cell.addEventListener('click', () => {
+      const dow = parseInt(cell.dataset.dow);
+      const hour = parseInt(cell.dataset.hour);
+      showHeatmapDetail(dow, hour, days[dow]);
+    });
+  });
+}
+
+async function showHeatmapDetail(dow, hour, dayName) {
+  const overlay = dom.heatmapDetailOverlay;
+  const title = document.getElementById('heatmap-detail-title');
+  const body = document.getElementById('heatmap-detail-body');
+
+  const hourStr = hour.toString().padStart(2, '0');
+  title.textContent = `${dayName} ${hourStr}:00 — Activities (last 12 weeks)`;
+  body.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-dim)">Loading...</div>';
+  overlay.style.display = '';
+
+  // Close handlers
+  const closeBtn = document.getElementById('heatmap-detail-close');
+  const close = () => { overlay.style.display = 'none'; };
+  closeBtn.onclick = close;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  try {
+    const activities = await invoke('get_heatmap_activities', { dow, hour });
+
+    if (!activities || activities.length === 0) {
+      body.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-dim)">No activities in this slot</div>';
+      return;
+    }
+
+    // Build counts by type
+    const counts = {};
+    for (const a of activities) {
+      const kind = (a.kind || '').toLowerCase();
+      const label = KIND_LABELS[kind] || formatKind(kind);
+      counts[label] = (counts[label] || 0) + 1;
+    }
+
+    let html = '<div class="heatmap-detail-summary">';
+    html += `<span class="kind-chip"><span class="chip-count">${activities.length}</span> total</span>`;
+    for (const [label, count] of Object.entries(counts).sort((a, b) => b[1] - a[1])) {
+      html += `<span class="kind-chip"><span class="chip-count">${count}</span> ${escapeHtml(label)}</span>`;
+    }
+    html += '</div>';
+
+    html += `<table class="heatmap-detail-table">
+      <thead><tr>
+        <th>Type</th><th>Title</th><th>Project</th><th>Source</th><th>Date</th>
+      </tr></thead><tbody>`;
+
+    for (const a of activities) {
+      const kind = (a.kind || '').toLowerCase();
+      const kindClass = KIND_CLASSES[kind] || 'kind-default';
+      const kindLabel = KIND_LABELS[kind] || formatKind(kind);
+      const source = (a.source || '').toLowerCase();
+      const sourceLabel = SOURCE_META[source]?.label || source;
+      const titleText = escapeHtml(a.title || '');
+      const project = a.project ? escapeHtml(a.project) : '—';
+      const date = new Date(a.occurred_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+      const titleHtml = a.url
+        ? `<a class="activity-title-link" href="${escapeAttr(a.url)}" target="_blank" title="${escapeAttr(a.title)}">${titleText}</a>`
+        : titleText;
+
+      html += `<tr>
+        <td><span class="kind-badge ${kindClass}">${kindLabel}</span></td>
+        <td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${titleHtml}</td>
+        <td><span class="project-tag">${project}</span></td>
+        <td><span class="source-badge ${source}">${sourceLabel}</span></td>
+        <td><span class="time-dim">${date}</span></td>
+      </tr>`;
+    }
+
+    html += '</tbody></table>';
+    body.innerHTML = html;
+  } catch (err) {
+    body.innerHTML = `<div style="padding:20px;text-align:center;color:var(--highlight)">Failed to load: ${escapeHtml(String(err))}</div>`;
+  }
 }
 
 function renderFocusChart(focus) {

@@ -8,6 +8,7 @@ use tauri::State;
 use crate::auth::{AuthManager, AuthStatus};
 use crate::config::AppConfig;
 use crate::db::{get_activities_for_range, get_cached_summary, set_cached_summary,
+    invalidate_all_summaries,
     query_weekly_velocity, query_activity_heatmap, query_cycle_times,
     query_project_distribution, query_off_hours_ratio, query_message_volume,
     query_daily_vectors, query_dow_project};
@@ -187,8 +188,12 @@ pub async fn trigger_sync(state: State<'_, AppState>) -> Result<String, String> 
     let db = Arc::clone(&state.db);
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
 
-    let scheduler = SyncScheduler::new(db, config);
+    let scheduler = SyncScheduler::new(Arc::clone(&db), config);
     scheduler.run_once().await;
+
+    // Invalidate LLM summaries so they regenerate with fresh data
+    // (important when working hours or other settings change).
+    invalidate_all_summaries(&db);
 
     Ok("sync complete".to_string())
 }
@@ -467,6 +472,17 @@ pub async fn get_trends_ai_summary(
         Ok(summary) => Ok(Some(summary)),
         Err(_) => Ok(None),
     }
+}
+
+#[tauri::command]
+pub async fn get_heatmap_activities(
+    state: State<'_, AppState>,
+    dow: i32,
+    hour: i32,
+) -> Result<Vec<Activity>, String> {
+    let since = Utc::now() - chrono::Duration::weeks(12);
+    crate::db::get_activities_for_dow_hour(&state.db, since, dow, hour)
+        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------

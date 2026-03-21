@@ -505,6 +505,15 @@ fn parse_event(event: &GitHubEvent, occurred_at: DateTime<Utc>) -> Vec<Activity>
 
 fn parse_push_event(event: &GitHubEvent, occurred_at: DateTime<Utc>) -> Vec<Activity> {
     let payload = &event.payload;
+
+    // Extract the branch ref (e.g. "refs/heads/feat/my-feature" → "feat/my-feature").
+    // Skip pushes to default branches — those are merge commits, not direct work.
+    let full_ref = payload.get("ref").and_then(|r| r.as_str()).unwrap_or("");
+    let branch = full_ref.strip_prefix("refs/heads/").unwrap_or(full_ref);
+    if matches!(branch, "main" | "master" | "develop" | "dev") {
+        return Vec::new();
+    }
+
     let commits = payload
         .get("commits")
         .and_then(|c| c.as_array())
@@ -521,7 +530,7 @@ fn parse_push_event(event: &GitHubEvent, occurred_at: DateTime<Utc>) -> Vec<Acti
         if n == 1 { "" } else { "s" },
         event.repo.name
     );
-    let url = format!("https://github.com/{}", event.repo.name);
+    let url = format!("https://github.com/{}/tree/{}", event.repo.name, branch);
 
     let commit_messages: Vec<String> = commits
         .iter()
@@ -543,7 +552,7 @@ fn parse_push_event(event: &GitHubEvent, occurred_at: DateTime<Utc>) -> Vec<Acti
     );
     activity.description = Some(description);
     activity.project = Some(event.repo.name.clone());
-    // Store only count and SHAs — full commit objects waste memory and DB space
+    // Store count, SHAs, and branch for PR association
     let commit_shas: Vec<&str> = commits
         .iter()
         .filter_map(|c| c.get("sha").and_then(|s| s.as_str()))
@@ -551,6 +560,7 @@ fn parse_push_event(event: &GitHubEvent, occurred_at: DateTime<Utc>) -> Vec<Acti
     activity.metadata = serde_json::json!({
         "commit_count": n,
         "commit_shas": commit_shas,
+        "branch": branch,
     });
 
     vec![activity]

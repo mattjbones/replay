@@ -90,6 +90,7 @@ pub fn run() {
             commands::get_open_prs,
             commands::get_trends_data,
             commands::get_trends_ai_summary,
+            commands::get_heatmap_activities,
         ]);
 
     tracing::info!("calling tauri::Builder::run()...");
