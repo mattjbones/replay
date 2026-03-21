@@ -40,7 +40,7 @@
       "endpoints": [
         "https://github.com/mattjbones/replay/releases/latest/download/latest.json"
       ],
-      "pubkey": "PASTE_YOUR_ED25519_PUBLIC_KEY_HERE"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlGMDhEQTc2MUI5NzFCMTcKUldRWEc1Y2JkdG9JbjZHalI2dklBSEk0RTZCN3ZHQ3lCZEdrTDNTdFNuRUlhUlZGNEorS3VsMGIK"
     }
   }
 }

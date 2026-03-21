@@ -588,6 +588,28 @@ pub struct ProductivityData {
     pub baseline_avg: f64,
 }
 
+/// If `weeks` has fewer than 12 entries, prepend one zero-data week before the
+/// earliest week so charts don't start right at the y-axis edge.
+/// Returns the label for the inserted week (if any) so callers can pad series too.
+fn pad_weeks_to_min(weeks: &mut Vec<String>, min_weeks: usize) -> Option<String> {
+    if weeks.len() >= min_weeks || weeks.is_empty() {
+        return None;
+    }
+    // Parse the earliest week label "YYYY-WNN" and step back one week
+    let first = &weeks[0];
+    if let (Some(year), Some(wnum)) = (
+        first.get(..4).and_then(|s| s.parse::<i32>().ok()),
+        first.get(6..).and_then(|s| s.parse::<u32>().ok()),
+    ) {
+        let (py, pw) = if wnum <= 1 { (year - 1, 52) } else { (year, wnum - 1) };
+        let label = format!("{py}-W{pw:02}");
+        weeks.insert(0, label.clone());
+        Some(label)
+    } else {
+        None
+    }
+}
+
 // --- ML helpers ---
 
 fn linear_regression(ys: &[f64]) -> (f64, f64) {
@@ -724,6 +746,7 @@ pub async fn get_trends_data(
     let mut week_set: Vec<String> = velocity_rows.iter().map(|(w, _, _)| w.clone()).collect();
     week_set.sort();
     week_set.dedup();
+    pad_weeks_to_min(&mut week_set, 12);
 
     let mut vel_series: HashMap<String, Vec<f64>> = HashMap::new();
     for kind in &key_kinds {
@@ -735,6 +758,7 @@ pub async fn get_trends_data(
         }).collect();
         vel_series.insert(kind.to_string(), values);
     }
+    // The padded week has no matching rows so its sum is already 0 — no extra fixup needed.
 
     let mut trend_slopes: HashMap<String, f64> = HashMap::new();
     for (kind, values) in &vel_series {
@@ -782,11 +806,18 @@ pub async fn get_trends_data(
         WeeklyAvg { week, avg_hours: avg }
     }).collect();
     cycle_time.sort_by(|a, b| a.week.cmp(&b.week));
+    if cycle_time.len() < 12 && !cycle_time.is_empty() {
+        let mut ct_weeks: Vec<String> = cycle_time.iter().map(|c| c.week.clone()).collect();
+        if let Some(label) = pad_weeks_to_min(&mut ct_weeks, 12) {
+            cycle_time.insert(0, WeeklyAvg { week: label, avg_hours: 0.0 });
+        }
+    }
 
     // --- Focus ---
     let mut focus_weeks: Vec<String> = project_rows.iter().map(|(w, _, _)| w.clone()).collect();
     focus_weeks.sort();
     focus_weeks.dedup();
+    pad_weeks_to_min(&mut focus_weeks, 12);
 
     let mut proj_totals: HashMap<String, i64> = HashMap::new();
     for (_, proj, cnt) in &project_rows {
@@ -925,6 +956,7 @@ pub async fn get_trends_data(
     // --- Burnout ---
     let mut burnout_weeks: Vec<String> = offhours_rows.iter().map(|(w, _, _)| w.clone()).collect();
     burnout_weeks.sort();
+    pad_weeks_to_min(&mut burnout_weeks, 12);
 
     let off_hours_pct: Vec<f64> = burnout_weeks.iter().map(|w| {
         offhours_rows.iter()

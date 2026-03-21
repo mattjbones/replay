@@ -349,13 +349,13 @@ function resetGridLayout() {
 const SOURCE_META = {
   github: {
     label: "GitHub",
-    color: "#238636",
+    colorVar: '--github',
     helper: 'Or run: <code>gh auth login</code> and Recap will use it automatically.',
     placeholder: "ghp_...",
   },
   linear: {
     label: "Linear",
-    color: "#5e6ad2",
+    colorVar: '--linear',
     helper: 'Get key: <a href="https://linear.app/settings/api" target="_blank">Settings &rarr; API</a>',
     placeholder: "lin_api_...",
   },
@@ -958,7 +958,7 @@ function renderActivityChart(chartData) {
         legend: {
           position: "bottom",
           labels: {
-            color: "#8a8a9a",
+            color: cssVar('--text-dim'),
             font: { size: 11 },
             boxWidth: 12,
             padding: 12,
@@ -968,13 +968,13 @@ function renderActivityChart(chartData) {
       scales: {
         x: {
           stacked: true,
-          ticks: { color: "#8a8a9a", font: { size: 11 } },
+          ticks: { color: cssVar('--text-dim'), font: { size: 11 } },
           grid: { display: false },
         },
         y: {
           stacked: true,
-          ticks: { color: "#8a8a9a", font: { size: 11 }, stepSize: 1 },
-          grid: { color: "rgba(255,255,255,0.04)" },
+          ticks: { color: cssVar('--text-dim'), font: { size: 11 }, stepSize: 1 },
+          grid: { color: cssVar('--chart-grid') },
         },
       },
     },
@@ -1613,7 +1613,7 @@ function renderSettingsConnections() {
       <div class="auth-info">
         <div class="auth-name">${meta.label}</div>
         ${connected
-          ? '<div class="auth-helper" style="color:#34d058;">Connected</div>'
+          ? '<div class="auth-helper" style="color:var(--status-completed);">Connected</div>'
           : `<div class="auth-helper">${meta.helper}</div>
              <div class="auth-input-row">
                <input type="password" class="auth-input" id="token-${source}" placeholder="${escapeAttr(meta.placeholder)}" autocomplete="off" spellcheck="false">
@@ -1642,7 +1642,7 @@ function renderSettingsConnections() {
     <div class="auth-info">
       <div class="auth-name">Anthropic</div>
       ${anthropicConnected
-        ? '<div class="auth-helper" style="color:#34d058;">API key configured</div>'
+        ? '<div class="auth-helper" style="color:var(--status-completed);">API key configured</div>'
         : `<div class="auth-helper">Required for LLM summaries &amp; standup generation. Get a key from the Anthropic Console.</div>
            <div class="auth-input-row">
              <input type="password" class="auth-input" id="token-anthropic" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
@@ -1937,11 +1937,11 @@ const TREND_CHART_OPTS = {
   responsive: true,
   maintainAspectRatio: false,
   plugins: {
-    legend: { position: 'bottom', labels: { color: '#8a8a9a', font: { size: 11 }, boxWidth: 12, padding: 12 } },
+    legend: { position: 'bottom', labels: { color: cssVar('--text-dim'), font: { size: 11 }, boxWidth: 12, padding: 12 } },
   },
   scales: {
-    x: { ticks: { color: '#8a8a9a', font: { size: 10 } }, grid: { display: false } },
-    y: { ticks: { color: '#8a8a9a', font: { size: 11 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+    x: { ticks: { color: cssVar('--text-dim'), font: { size: 10 } }, grid: { display: false } },
+    y: { ticks: { color: cssVar('--text-dim'), font: { size: 11 } }, grid: { color: cssVar('--chart-grid') } },
   },
 };
 
@@ -2043,7 +2043,7 @@ function renderForecastChart(velocity, prediction) {
 
   const colorMap = {
     pr_merged: KIND_COLORS.merges,
-    issue_completed: KIND_COLORS.completed || '#34d058',
+    issue_completed: KIND_COLORS.completed || cssVar('--status-completed'),
     commit_pushed: KIND_COLORS.commits,
     pr_reviewed: KIND_COLORS.reviews,
   };
@@ -2052,7 +2052,7 @@ function renderForecastChart(velocity, prediction) {
   const datasets = [];
 
   for (const [kind, hist] of Object.entries(velocity.series)) {
-    const color = colorMap[kind] || '#888';
+    const color = colorMap[kind] || cssVar('--fallback');
     const forecast = prediction.forecasts[kind] || [];
     // Historical data (solid)
     datasets.push({
@@ -2098,14 +2098,14 @@ function renderProductivityChart(prod) {
         {
           label: 'Score',
           data: prod.scores,
-          borderColor: '#a371f7',
-          backgroundColor: 'rgba(163, 113, 247, 0.15)',
+          borderColor: cssVar('--highlight'),
+          backgroundColor: cssVar('--highlight') + '26',
           fill: true, tension: 0.3, pointRadius: 3,
         },
         {
           label: 'Baseline',
           data: new Array(prod.scores.length).fill(prod.baseline_avg),
-          borderColor: '#5a5a6e', borderDash: [5, 5],
+          borderColor: cssVar('--text-muted'), borderDash: [5, 5],
           pointRadius: 0, fill: false,
         },
       ],
@@ -2115,7 +2115,7 @@ function renderProductivityChart(prod) {
 }
 
 function renderDayClusters(data) {
-  const palette = ['#a371f7', '#58a6ff', '#34d058'];
+  const palette = [cssVar('--highlight'), cssVar('--text-dim'), cssVar('--accent')];
   const dims = ['Commits', 'PRs', 'Reviews', 'Issues', 'Msgs'];
   let html = '<div class="cluster-grid">';
   data.clusters.forEach((c, i) => {
@@ -2162,7 +2162,7 @@ function renderVelocityChart(v) {
 
   const colorMap = {
     pr_merged: KIND_COLORS.merges,
-    issue_completed: KIND_COLORS.completed || '#34d058',
+    issue_completed: KIND_COLORS.completed || cssVar('--status-completed'),
     commit_pushed: KIND_COLORS.commits,
     pr_reviewed: KIND_COLORS.reviews,
   };
@@ -2170,7 +2170,7 @@ function renderVelocityChart(v) {
   const datasets = [];
 
   for (const [kind, values] of Object.entries(v.series)) {
-    const color = colorMap[kind] || '#888';
+    const color = colorMap[kind] || cssVar('--fallback');
     datasets.push({
       label: labelMap[kind] || kind,
       data: values,
@@ -2219,7 +2219,7 @@ function renderCycleTimeChart(cycleTime) {
       datasets: [{
         label: 'Avg Hours',
         data: cycleTime.map(c => Math.round(c.avg_hours * 10) / 10),
-        backgroundColor: KIND_COLORS.issues || '#5e6ad2',
+        backgroundColor: KIND_COLORS.issues || cssVar('--linear'),
         borderRadius: 3,
       }],
     },
@@ -2243,7 +2243,7 @@ function renderHeatmap(cells) {
     for (let h = 0; h < 24; h++) {
       const count = grid[d][h];
       const intensity = count / max;
-      const bg = `rgba(163, 113, 247, ${0.05 + intensity * 0.9})`;
+      const bg = `rgba(var(--heatmap), ${0.05 + intensity * 0.9})`;
       html += `<div class="heatmap-cell" data-dow="${d}" data-hour="${h}" style="background:${bg}" title="${days[d]} ${h}:00 — ${count} activities"></div>`;
     }
   }
@@ -2338,7 +2338,7 @@ function renderFocusChart(focus) {
   if (!hasChartJs()) return;
   if (state.charts.focus) state.charts.focus.destroy();
 
-  const palette = ['#a371f7', '#58a6ff', '#34d058', '#d4a72c', '#e94560', '#5e6ad2', '#8b949e'];
+  const palette = [cssVar('--highlight'), cssVar('--text-dim'), cssVar('--accent'), cssVar('--text'), cssVar('--status-closed'), cssVar('--status-review'), cssVar('--text-muted')];
   const datasets = [];
   let i = 0;
   for (const [proj, values] of Object.entries(focus.projects)) {
@@ -2381,14 +2381,14 @@ function renderBurnoutChart(burnout) {
         {
           label: 'Off-hours %',
           data: burnout.off_hours_pct.map(v => Math.round(v * 10) / 10),
-          borderColor: '#e94560',
-          backgroundColor: 'rgba(233, 69, 96, 0.1)',
+          borderColor: cssVar('--status-closed'),
+          backgroundColor: cssVar('--status-closed') + '1a',
           fill: true, tension: 0.3, yAxisID: 'y',
         },
         {
           label: 'Messages',
           data: burnout.message_volume,
-          borderColor: '#5e6ad2',
+          borderColor: cssVar('--status-open'),
           fill: false, tension: 0.3, yAxisID: 'y1',
         },
       ],
@@ -2400,13 +2400,13 @@ function renderBurnoutChart(burnout) {
         y: {
           ...TREND_CHART_OPTS.scales.y,
           position: 'left',
-          title: { display: true, text: 'Off-hours %', color: '#8a8a9a', font: { size: 10 } },
+          title: { display: true, text: 'Off-hours %', color: cssVar('--text-dim'), font: { size: 10 } },
         },
         y1: {
           position: 'right',
-          ticks: { color: '#8a8a9a', font: { size: 11 } },
+          ticks: { color: cssVar('--text-dim'), font: { size: 11 } },
           grid: { drawOnChartArea: false },
-          title: { display: true, text: 'Messages', color: '#8a8a9a', font: { size: 10 } },
+          title: { display: true, text: 'Messages', color: cssVar('--text-dim'), font: { size: 10 } },
         },
       },
     },
