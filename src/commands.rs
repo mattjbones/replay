@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{Datelike, NaiveDate, NaiveTime, TimeZone, Utc, Weekday};
 use serde::Serialize;
 use tauri::State;
 
 use crate::auth::{AuthManager, AuthStatus};
 use crate::config::AppConfig;
-use crate::db::{get_activities_for_range, get_cached_summary, set_cached_summary,
+use crate::db::{get_activities_for_range, get_activities_for_range_unlimited, get_cached_summary, set_cached_summary,
     invalidate_all_summaries,
     query_weekly_velocity, query_activity_heatmap, query_cycle_times,
-    query_project_distribution, query_off_hours_ratio, query_message_volume,
+    query_project_distribution, query_message_volume,
     query_daily_vectors, query_dow_project};
 use crate::db::Database;
 use crate::digest::build_digest;
@@ -740,18 +740,116 @@ pub fn naive_bayes_predict(
     probs
 }
 
+fn parse_hhmm_or_default(value: &str, default_h: u32, default_m: u32) -> NaiveTime {
+    let mut parts = value.splitn(2, ':');
+    let hour = parts
+        .next()
+        .and_then(|h| h.parse::<u32>().ok())
+        .unwrap_or(default_h);
+    let minute = parts
+        .next()
+        .and_then(|m| m.parse::<u32>().ok())
+        .unwrap_or(default_m);
+    NaiveTime::from_hms_opt(hour.min(23), minute.min(59), 0)
+        .unwrap_or_else(|| NaiveTime::from_hms_opt(default_h, default_m, 0).expect("valid default"))
+}
+
+fn parse_working_day(day: &str) -> Option<Weekday> {
+    let normalized = day.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "mon" | "monday" => Some(Weekday::Mon),
+        "tue" | "tues" | "tuesday" => Some(Weekday::Tue),
+        "wed" | "wednesday" => Some(Weekday::Wed),
+        "thu" | "thur" | "thurs" | "thursday" => Some(Weekday::Thu),
+        "fri" | "friday" => Some(Weekday::Fri),
+        "sat" | "saturday" => Some(Weekday::Sat),
+        "sun" | "sunday" => Some(Weekday::Sun),
+        _ => None,
+    }
+}
+
+fn is_within_work_window(time: NaiveTime, start: NaiveTime, end: NaiveTime) -> bool {
+    if start < end {
+        time >= start && time < end
+    } else if start > end {
+        // Overnight shift window, e.g. 22:00-06:00.
+        time >= start || time < end
+    } else {
+        // start == end means full-day window.
+        true
+    }
+}
+
+pub fn build_off_hours_rows(
+    activities: &[Activity],
+    working_hours: &crate::config::WorkingHoursConfig,
+) -> Vec<(String, i64, i64)> {
+    let timezone_name = working_hours.timezone.trim();
+    let timezone = timezone_name
+        .parse::<chrono_tz::Tz>()
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                "invalid working-hours timezone '{}', falling back to UTC",
+                timezone_name
+            );
+            chrono_tz::UTC
+        });
+
+    let mut working_days: std::collections::HashSet<Weekday> = working_hours
+        .working_days
+        .iter()
+        .filter_map(|d| parse_working_day(d))
+        .collect();
+    if working_days.is_empty() {
+        working_days = [
+            Weekday::Mon,
+            Weekday::Tue,
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+        ]
+        .into_iter()
+        .collect();
+    }
+
+    let work_start = parse_hhmm_or_default(&working_hours.work_start, 9, 0);
+    let work_end = parse_hhmm_or_default(&working_hours.work_end, 17, 0);
+
+    let mut week_counts: std::collections::BTreeMap<String, (i64, i64)> = std::collections::BTreeMap::new();
+    for activity in activities {
+        let local_dt = activity.occurred_at.with_timezone(&timezone);
+        let week = local_dt.format("%Y-W%W").to_string();
+        let entry = week_counts.entry(week).or_insert((0, 0));
+        entry.0 += 1;
+
+        let is_working_day = working_days.contains(&local_dt.weekday());
+        let in_work_window = is_within_work_window(local_dt.time(), work_start, work_end);
+        if !is_working_day || !in_work_window {
+            entry.1 += 1;
+        }
+    }
+
+    week_counts
+        .into_iter()
+        .map(|(week, (total, off_hours))| (week, total, off_hours))
+        .collect()
+}
+
 #[tauri::command]
 pub async fn get_trends_data(
     state: State<'_, AppState>,
 ) -> Result<TrendsData, String> {
     let since = Utc::now() - chrono::Duration::weeks(12);
+    let now = Utc::now();
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
 
     // Run all queries
     let velocity_rows = query_weekly_velocity(&state.db, since).map_err(|e| e.to_string())?;
     let heatmap_rows = query_activity_heatmap(&state.db, since).map_err(|e| e.to_string())?;
     let cycle_rows = query_cycle_times(&state.db, since).map_err(|e| e.to_string())?;
     let project_rows = query_project_distribution(&state.db, since).map_err(|e| e.to_string())?;
-    let offhours_rows = query_off_hours_ratio(&state.db, since).map_err(|e| e.to_string())?;
+    let burnout_activities = get_activities_for_range_unlimited(&state.db, since, now).map_err(|e| e.to_string())?;
+    let offhours_rows = build_off_hours_rows(&burnout_activities, &config.working_hours);
     let msg_rows = query_message_volume(&state.db, since).map_err(|e| e.to_string())?;
     let daily_rows = query_daily_vectors(&state.db, since).map_err(|e| e.to_string())?;
     let dow_proj_rows = query_dow_project(&state.db, since).map_err(|e| e.to_string())?;

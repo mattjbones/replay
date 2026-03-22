@@ -53,6 +53,26 @@ pub fn get_activities_for_range(
     rows.collect()
 }
 
+/// Returns all activities whose `occurred_at` falls within [start, end), ordered by occurred_at DESC.
+/// Used by rollups that need complete aggregates (for example burnout over multiple weeks).
+pub fn get_activities_for_range_unlimited(
+    db: &Database,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> rusqlite::Result<Vec<Activity>> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT id, source, source_id, kind, title, description, url, project, occurred_at, metadata, synced_at
+         FROM activities
+         WHERE occurred_at >= ?1 AND occurred_at < ?2
+         ORDER BY occurred_at DESC",
+    )?;
+
+    let rows = stmt.query_map(params![start.to_rfc3339(), end.to_rfc3339()], row_to_activity)?;
+
+    rows.collect()
+}
+
 /// Returns activities for a specific source within a time range, ordered by occurred_at DESC.
 /// Limited to ACTIVITY_LIMIT rows to cap memory usage.
 pub fn get_activities_by_source(

@@ -1,6 +1,10 @@
 use recap::commands::{
-    linear_regression, holt_winters_forecast, detect_anomalies, kmeans, naive_bayes_predict,
+    build_off_hours_rows, detect_anomalies, holt_winters_forecast, kmeans, linear_regression,
+    naive_bayes_predict,
 };
+use recap::config::WorkingHoursConfig;
+use recap::models::{Activity, ActivityKind, Source};
+use chrono::{DateTime, Utc};
 
 // ---------------------------------------------------------------------------
 // linear_regression
@@ -203,4 +207,67 @@ fn naive_bayes_truncates_to_five() {
         .collect();
     let result = naive_bayes_predict(&data, 1);
     assert_eq!(result.len(), 5);
+}
+
+// ---------------------------------------------------------------------------
+// build_off_hours_rows
+// ---------------------------------------------------------------------------
+
+fn test_activity(occurred_at: &str) -> Activity {
+    Activity {
+        id: "test-id".to_string(),
+        source: Source::GitHub,
+        source_id: format!("src-{occurred_at}"),
+        kind: ActivityKind::CommitPushed,
+        title: "test".to_string(),
+        description: None,
+        url: "https://example.com".to_string(),
+        project: Some("proj".to_string()),
+        occurred_at: DateTime::parse_from_rfc3339(occurred_at)
+            .unwrap()
+            .with_timezone(&Utc),
+        metadata: serde_json::Value::Null,
+        synced_at: Utc::now(),
+    }
+}
+
+#[test]
+fn off_hours_counts_weekends_and_after_hours() {
+    let activities = vec![
+        test_activity("2026-03-16T10:00:00Z"), // Monday, in-hours
+        test_activity("2026-03-16T21:00:00Z"), // Monday, after-hours
+        test_activity("2026-03-21T12:00:00Z"), // Saturday
+    ];
+
+    let cfg = WorkingHoursConfig {
+        work_start: "09:00".to_string(),
+        work_end: "17:00".to_string(),
+        working_days: vec!["Mon".to_string(), "Tue".to_string(), "Wed".to_string(), "Thu".to_string(), "Fri".to_string()],
+        timezone: "UTC".to_string(),
+    };
+
+    let rows = build_off_hours_rows(&activities, &cfg);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].1, 3); // total
+    assert_eq!(rows[0].2, 2); // off-hours
+}
+
+#[test]
+fn off_hours_respects_timezone_conversion() {
+    let activities = vec![
+        test_activity("2026-01-06T08:30:00Z"), // London 08:30 (off-hours)
+        test_activity("2026-01-06T09:30:00Z"), // London 09:30 (in-hours)
+    ];
+
+    let cfg = WorkingHoursConfig {
+        work_start: "09:00".to_string(),
+        work_end: "17:00".to_string(),
+        working_days: vec!["Mon".to_string(), "Tue".to_string(), "Wed".to_string(), "Thu".to_string(), "Fri".to_string()],
+        timezone: "Europe/London".to_string(),
+    };
+
+    let rows = build_off_hours_rows(&activities, &cfg);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].1, 2);
+    assert_eq!(rows[0].2, 1);
 }
