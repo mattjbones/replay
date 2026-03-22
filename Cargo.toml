@@ -1,14 +1,16 @@
-[package]
-name = "recap"
+[workspace]
+resolver = "2"
+members = [
+    "crates/recap-core",
+    "crates/recap-app",
+    "crates/recap-daemon",
+]
+
+[workspace.package]
 version = "0.0.0"
 edition = "2021"
-description = "Personal activity digest from Linear, GitHub, Slack, and Notion"
 
-[dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-notification = "2"
-tauri-plugin-opener = "2"
-tauri-plugin-updater = "2"
+[workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
@@ -20,11 +22,13 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 ulid = { version = "1", features = ["serde"] }
-# keyring removed — tokens stored in SQLite to avoid macOS Keychain prompts during dev
 glob-match = "0.2"
 dirs = "5"
 async-trait = "0.1"
 urlencoding = "2"
-
-[build-dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
 tauri-build = { version = "2", features = [] }
+recap-core = { path = "crates/recap-core" }

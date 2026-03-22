@@ -1,9 +1,9 @@
-use recap::commands::{
+use recap_app::commands::{
     build_off_hours_rows, detect_anomalies, holt_winters_forecast, kmeans, linear_regression,
     naive_bayes_predict,
 };
-use recap::config::WorkingHoursConfig;
-use recap::models::{Activity, ActivityKind, Source};
+use recap_core::config::WorkingHoursConfig;
+use recap_core::models::{Activity, ActivityKind, Source};
 use chrono::{DateTime, Utc};
 
 // ---------------------------------------------------------------------------

@@ -5,17 +5,17 @@ use chrono::{Datelike, NaiveDate, NaiveTime, TimeZone, Utc, Weekday};
 use serde::Serialize;
 use tauri::State;
 
-use crate::auth::{AuthManager, AuthStatus};
-use crate::config::AppConfig;
-use crate::db::{get_activities_for_range, get_activities_for_range_unlimited, get_cached_summary, set_cached_summary,
+use recap_core::auth::{AuthManager, AuthStatus};
+use recap_core::config::AppConfig;
+use recap_core::db::{get_activities_for_range, get_activities_for_range_unlimited, get_cached_summary, set_cached_summary,
     invalidate_all_summaries,
     query_weekly_velocity, query_activity_heatmap, query_cycle_times,
     query_project_distribution, query_message_volume,
     query_daily_vectors, query_dow_project};
-use crate::db::Database;
-use crate::digest::build_digest;
-use crate::models::*;
-use crate::sync::SyncScheduler;
+use recap_core::db::Database;
+use recap_core::digest::build_digest;
+use recap_core::models::*;
+use recap_core::sync::SyncScheduler;
 
 pub struct AppState {
     pub db: Arc<Database>,
@@ -163,7 +163,7 @@ pub async fn exchange_slack_refresh_token(
 pub async fn get_all_activities(
     state: State<'_, AppState>,
 ) -> Result<Vec<Activity>, String> {
-    crate::db::get_all_activities(&state.db).map_err(|e| e.to_string())
+    recap_core::db::get_all_activities(&state.db).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -249,7 +249,7 @@ pub async fn get_llm_summary(
     let digest = build_digest(activities, p);
 
     // Generate summary via claude CLI (preferred) or Anthropic API (fallback).
-    let summary = crate::llm::generate_summary(&config.llm, &digest).await?;
+    let summary = recap_core::llm::generate_summary(&config.llm, &digest).await?;
 
     // Cache the result.
     set_cached_summary(&state.db, &cache_key, &summary);
@@ -394,8 +394,8 @@ pub async fn get_standup(
 
     // Fetch open Linear tickets (urgent + high priority only) and open GitHub PRs
     let (open_tickets, open_prs) = tokio::join!(
-        crate::integrations::linear::fetch_open_tickets(),
-        crate::integrations::github::fetch_open_prs(&config),
+        recap_core::integrations::linear::fetch_open_tickets(),
+        recap_core::integrations::github::fetch_open_prs(&config),
     );
 
     let urgent_tickets: Vec<_> = open_tickets
@@ -447,7 +447,7 @@ pub async fn get_standup(
         tickets = if format_tickets.is_empty() { "(none)".to_string() } else { format_tickets },
     );
 
-    let summary = crate::llm::generate_from_prompt(&config.llm, &prompt).await?;
+    let summary = recap_core::llm::generate_from_prompt(&config.llm, &prompt).await?;
     set_cached_summary(&state.db, &cache_key, &summary);
     Ok(Some(summary))
 }
@@ -457,24 +457,24 @@ pub async fn get_standup(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn get_open_tickets() -> Result<Vec<crate::integrations::linear::OpenTicket>, String> {
-    crate::integrations::linear::fetch_open_tickets().await
+pub async fn get_open_tickets() -> Result<Vec<recap_core::integrations::linear::OpenTicket>, String> {
+    recap_core::integrations::linear::fetch_open_tickets().await
 }
 
 #[tauri::command]
 pub async fn get_open_prs(
     state: State<'_, AppState>,
-) -> Result<Vec<crate::integrations::github::OpenPr>, String> {
+) -> Result<Vec<recap_core::integrations::github::OpenPr>, String> {
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
-    crate::integrations::github::fetch_open_prs(&config).await
+    recap_core::integrations::github::fetch_open_prs(&config).await
 }
 
 #[tauri::command]
 pub async fn get_github_issues(
     state: State<'_, AppState>,
-) -> Result<Vec<crate::integrations::github::GitHubIssue>, String> {
+) -> Result<Vec<recap_core::integrations::github::GitHubIssue>, String> {
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
-    crate::integrations::github::fetch_github_issues(&config).await
+    recap_core::integrations::github::fetch_github_issues(&config).await
 }
 
 #[tauri::command]
@@ -483,7 +483,7 @@ pub async fn get_trends_ai_summary(
     prompt: String,
 ) -> Result<Option<String>, String> {
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
-    match crate::llm::generate_from_prompt(&config.llm, &prompt).await {
+    match recap_core::llm::generate_from_prompt(&config.llm, &prompt).await {
         Ok(summary) => Ok(Some(summary)),
         Err(_) => Ok(None),
     }
@@ -496,7 +496,7 @@ pub async fn get_heatmap_activities(
     hour: i32,
 ) -> Result<Vec<Activity>, String> {
     let since = Utc::now() - chrono::Duration::weeks(12);
-    crate::db::get_activities_for_dow_hour(&state.db, since, dow, hour)
+    recap_core::db::get_activities_for_dow_hour(&state.db, since, dow, hour)
         .map_err(|e| e.to_string())
 }
 

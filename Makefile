@@ -2,19 +2,19 @@
 
 # Development with hot reload (Tauri watches both Rust + frontend)
 dev:
-	cargo tauri dev
+	cargo tauri dev --config crates/recap-app/tauri.conf.json
 
 # Type-check without building
 check:
-	cargo check
+	cargo check --workspace
 
 # Debug build
 build:
-	cargo tauri build --debug
+	cargo tauri build --debug --config crates/recap-app/tauri.conf.json
 
 # Release build (.app + .dmg)
 release:
-	cargo tauri build
+	cargo tauri build --config crates/recap-app/tauri.conf.json
 
 # Clean build artifacts
 clean:
@@ -27,7 +27,7 @@ test: test-rust test-ui
 
 # Run Rust integration and unit tests
 test-rust:
-	cargo test
+	cargo test --workspace
 
 # Run Playwright UI tests (installs deps if needed)
 test-ui:
@@ -37,5 +37,5 @@ test-ui:
 
 # Run cargo check + clippy
 lint:
-	cargo check --all-targets
-	cargo clippy --all-targets -- -D warnings
+	cargo check --workspace --all-targets
+	cargo clippy --workspace --all-targets -- -D warnings

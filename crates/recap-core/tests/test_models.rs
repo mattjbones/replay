@@ -1,5 +1,5 @@
 use chrono::Utc;
-use recap::models::*;
+use recap_core::models::*;
 
 #[test]
 fn source_display_roundtrips() {
