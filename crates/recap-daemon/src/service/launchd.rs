@@ -1,31 +1,33 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use anyhow::Context;
+
 const PLIST_LABEL: &str = "com.recap.daemon";
 
 /// Returns the path to the LaunchAgent plist file.
-fn plist_path() -> PathBuf {
-    dirs::home_dir()
-        .expect("could not determine home directory")
+fn plist_path() -> anyhow::Result<PathBuf> {
+    Ok(dirs::home_dir()
+        .context("could not determine home directory")?
         .join("Library/LaunchAgents")
-        .join(format!("{PLIST_LABEL}.plist"))
+        .join(format!("{PLIST_LABEL}.plist")))
 }
 
 /// Returns the path to the log directory (~/.config/recap/).
-fn log_dir() -> PathBuf {
-    dirs::config_dir()
-        .expect("could not determine config directory")
-        .join("recap")
+fn log_dir() -> anyhow::Result<PathBuf> {
+    Ok(dirs::config_dir()
+        .context("could not determine config directory")?
+        .join("recap"))
 }
 
 /// Install the LaunchAgent plist and load it via launchctl.
 pub fn install() -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
     let exe_str = exe.display().to_string();
-    let log_dir = log_dir();
+    let log_dir = log_dir()?;
     let stdout_log = log_dir.join("daemon.log");
     let stderr_log = log_dir.join("daemon.err.log");
-    let plist = plist_path();
+    let plist = plist_path()?;
 
     // Ensure the LaunchAgents directory exists
     if let Some(parent) = plist.parent() {
@@ -85,7 +87,7 @@ pub fn install() -> anyhow::Result<()> {
 
 /// Unload the LaunchAgent and delete the plist file.
 pub fn uninstall() -> anyhow::Result<()> {
-    let plist = plist_path();
+    let plist = plist_path()?;
 
     if !plist.exists() {
         println!("No plist found at {}; nothing to uninstall.", plist.display());
@@ -112,7 +114,7 @@ pub fn uninstall() -> anyhow::Result<()> {
 
 /// Print status information about the daemon.
 pub fn status() -> anyhow::Result<()> {
-    let plist = plist_path();
+    let plist = plist_path()?;
     let plist_installed = plist.exists();
 
     println!("=== Recap Daemon Status ===\n");
