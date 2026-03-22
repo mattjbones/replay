@@ -151,6 +151,20 @@ pub fn get_sync_cursor(db: &Database, source: &Source) -> Option<String> {
     .ok()
 }
 
+/// Returns the most recent `last_sync` timestamp across all sources, if any exist.
+pub fn get_latest_sync_time(db: &Database) -> Option<DateTime<Utc>> {
+    let conn = db.conn.lock().unwrap();
+    conn.query_row(
+        "SELECT MAX(last_sync) FROM sync_cursors",
+        [],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+    .map(|dt| dt.with_timezone(&Utc))
+}
+
 // ---------------------------------------------------------------------------
 // Trends queries
 // ---------------------------------------------------------------------------
@@ -361,11 +375,16 @@ pub fn search_activities(db: &Database, query: &str) -> rusqlite::Result<Vec<Act
             Some(format!("mutex poisoned: {e}")),
         )
     })?;
-    let pattern = format!("%{query}%");
+    // Escape SQL LIKE wildcards so user input is treated as literal text.
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
     let mut stmt = conn.prepare(
         "SELECT id, source, source_id, kind, title, description, url, project, occurred_at, metadata, synced_at
          FROM activities
-         WHERE title LIKE ?1 OR description LIKE ?1
+         WHERE title LIKE ?1 ESCAPE '\\' OR description LIKE ?1 ESCAPE '\\'
          ORDER BY occurred_at DESC
          LIMIT 100",
     )?;

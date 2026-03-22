@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chrono::{Datelike, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::Utc;
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::wrapper::Parameters,
@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use recap_core::config::AppConfig;
 use recap_core::db::Database;
+use recap_core::time::parse_period_range;
 
 use super::resources;
 
@@ -49,48 +50,8 @@ pub struct SearchParams {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn parse_period_range(
-    period: &str,
-    date: Option<&str>,
-) -> Result<(recap_core::models::Period, chrono::DateTime<Utc>, chrono::DateTime<Utc>), String> {
-    let base_date = match date {
-        Some(d) => NaiveDate::parse_from_str(d, "%Y-%m-%d")
-            .map_err(|e| format!("invalid date: {e}"))?,
-        None => Utc::now().date_naive(),
-    };
-
-    let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
-
-    match period {
-        "day" => {
-            let start = Utc.from_utc_datetime(&base_date.and_time(midnight));
-            let end = start + chrono::Duration::days(1);
-            Ok((recap_core::models::Period::Day(base_date), start, end))
-        }
-        "week" => {
-            let weekday = base_date.weekday().num_days_from_monday();
-            let week_start = base_date - chrono::Duration::days(weekday as i64);
-            let start = Utc.from_utc_datetime(&week_start.and_time(midnight));
-            let end = start + chrono::Duration::weeks(1);
-            Ok((recap_core::models::Period::Week(week_start), start, end))
-        }
-        "month" => {
-            let month_start = NaiveDate::from_ymd_opt(base_date.year(), base_date.month(), 1)
-                .ok_or("invalid month start")?;
-            let next_month = if base_date.month() == 12 {
-                NaiveDate::from_ymd_opt(base_date.year() + 1, 1, 1)
-            } else {
-                NaiveDate::from_ymd_opt(base_date.year(), base_date.month() + 1, 1)
-            }
-            .ok_or("invalid next month")?;
-
-            let start = Utc.from_utc_datetime(&month_start.and_time(midnight));
-            let end = Utc.from_utc_datetime(&next_month.and_time(midnight));
-            Ok((recap_core::models::Period::Month(month_start), start, end))
-        }
-        other => Err(format!("unknown period: {other} (expected day, week, or month)")),
-    }
-}
+/// Cooldown in seconds between manual sync triggers.
+const SYNC_COOLDOWN_SECS: i64 = 60;
 
 fn json_result(value: &impl Serialize) -> Result<CallToolResult, McpError> {
     let text = serde_json::to_string_pretty(value)
@@ -280,12 +241,31 @@ impl RecapServer {
     /// Get the current Recap configuration.
     #[tool(description = "Get the current Recap configuration (schedule, integrations, working hours, etc.).")]
     async fn get_config(&self) -> Result<CallToolResult, McpError> {
-        json_result(&self.config)
+        // Serialize config, then strip sensitive fields before exposing to MCP clients.
+        let mut value = serde_json::to_value(&self.config)
+            .map_err(|e| McpError::internal_error(format!("serialization error: {e}"), None))?;
+        if let Some(slack) = value.get_mut("slack").and_then(|v| v.as_object_mut()) {
+            slack.remove("client_id");
+            slack.remove("client_secret");
+        }
+        let text = serde_json::to_string_pretty(&value)
+            .map_err(|e| McpError::internal_error(format!("serialization error: {e}"), None))?;
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     /// Trigger an immediate sync pass.
     #[tool(description = "Trigger an immediate sync pass across all connected integrations.")]
     async fn trigger_sync(&self) -> Result<CallToolResult, McpError> {
+        // Enforce a cooldown so MCP clients cannot spam syncs.
+        if let Some(last) = recap_core::db::get_latest_sync_time(&self.db) {
+            let elapsed = Utc::now().signed_duration_since(last).num_seconds();
+            if elapsed < SYNC_COOLDOWN_SECS {
+                let remaining = SYNC_COOLDOWN_SECS - elapsed;
+                return Ok(CallToolResult::success(vec![Content::text(
+                    format!("sync was run recently, try again in {remaining}s"),
+                )]));
+            }
+        }
         let scheduler = recap_core::sync::SyncScheduler::new(
             Arc::clone(&self.db),
             self.config.clone(),
