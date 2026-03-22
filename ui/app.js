@@ -109,6 +109,8 @@ const state = {
   gridEditMode: false,
   lastSyncTime: null,
   updateBannerDismissed: false,
+  _ghOpenPrCount: null,
+  _ghOpenIssueCount: null,
 };
 
 // ===== Grid Layout System =====
@@ -683,6 +685,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     githubOpenPrCount: $("#github-open-pr-count"),
     githubIssueTbody: $("#github-issue-tbody"),
     githubIssueCount: $("#github-issue-count"),
+    githubTabBadge: $("#github-tab-badge"),
 
     // Linear view
     linearStats: $("#linear-stats"),
@@ -1596,11 +1599,24 @@ function renderGitHubView(activities) {
   fetchGitHubIssues();
 }
 
+function updateGitHubTabBadge() {
+  const parts = [];
+  if (state._ghOpenPrCount != null && state._ghOpenPrCount > 0) {
+    parts.push(`${state._ghOpenPrCount} PRs`);
+  }
+  if (state._ghOpenIssueCount != null && state._ghOpenIssueCount > 0) {
+    parts.push(`${state._ghOpenIssueCount} Issues`);
+  }
+  dom.githubTabBadge.textContent = parts.length ? parts.join(' \u00b7 ') : '';
+}
+
 async function fetchOpenPrs() {
   dom.githubOpenPrTbody.innerHTML = '<tr><td colspan="5" class="no-data">Loading...</td></tr>';
   dom.githubOpenPrCount.textContent = '';
   try {
     const prs = await invoke('get_open_prs');
+    state._ghOpenPrCount = prs.length;
+    updateGitHubTabBadge();
     dom.githubOpenPrCount.textContent = `${prs.length} PRs`;
     if (!prs.length) {
       dom.githubOpenPrTbody.innerHTML = '<tr><td colspan="5" class="no-data">No open PRs</td></tr>';
@@ -1631,6 +1647,8 @@ async function fetchGitHubIssues() {
   dom.githubIssueCount.textContent = '';
   try {
     const issues = await invoke('get_github_issues');
+    state._ghOpenIssueCount = issues.length;
+    updateGitHubTabBadge();
     dom.githubIssueCount.textContent = `${issues.length} issues`;
     if (!issues.length) {
       dom.githubIssueTbody.innerHTML = '<tr><td colspan="4" class="no-data">No open issues</td></tr>';

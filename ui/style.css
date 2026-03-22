@@ -1324,6 +1324,17 @@ body {
   flex-shrink: 0;
 }
 
+.nav-badge {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-weight: 400;
+  margin-left: 4px;
+}
+
+.nav-badge:empty {
+  display: none;
+}
+
 /* Source-colored active indicators */
 .nav-tab.active[data-view="github"] { border-bottom-color: var(--github); }
 .nav-tab.active[data-view="linear"] { border-bottom-color: var(--linear); }
