@@ -42,6 +42,7 @@ async function checkForUpdates(silent = true) {
     state.updateStatus = 'error';
     state.updateError = String(e);
   }
+  renderUpdateBanner();
 }
 
 async function installUpdate() {
@@ -53,6 +54,32 @@ async function installUpdate() {
   } catch (e) {
     showToast(`Update failed: ${e}`, 'error');
   }
+}
+
+// ===== Update Banner (main view) =====
+
+function renderUpdateBanner() {
+  const banner = document.getElementById('update-banner');
+  if (!banner) return;
+
+  if (state.updateStatus === 'available' && state.updateVersion && !state.updateBannerDismissed) {
+    document.getElementById('update-banner-text').textContent =
+      `v${state.updateVersion} available`;
+    banner.style.display = '';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+function dismissUpdateBanner() {
+  state.updateBannerDismissed = true;
+  const banner = document.getElementById('update-banner');
+  if (banner) banner.style.display = 'none';
+}
+
+function bindUpdateBannerEvents() {
+  document.getElementById('update-banner-dismiss')?.addEventListener('click', dismissUpdateBanner);
+  document.getElementById('update-banner-install')?.addEventListener('click', installUpdate);
 }
 
 // ===== State =====
@@ -81,6 +108,7 @@ const state = {
   gridLayout: null,
   gridEditMode: false,
   lastSyncTime: null,
+  updateBannerDismissed: false,
 };
 
 // ===== Grid Layout System =====
@@ -680,6 +708,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderDate();
   bindEvents();
   initCollapsibleCards();
+  bindUpdateBannerEvents();
   await refreshAuthStatus();
   // Load config first so grid layout can read it
   try {
@@ -845,6 +874,8 @@ function bindEvents() {
 
 function switchView(view) {
   state.activeView = view;
+  // Dismiss update banner on navigation
+  dismissUpdateBanner();
   // Exit edit mode if leaving overview
   if (view !== 'overview' && state.gridEditMode) {
     toggleEditMode();
