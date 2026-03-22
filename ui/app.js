@@ -74,11 +74,25 @@ function renderUpdateBanner() {
   const banner = document.getElementById('update-banner');
   if (!banner) return;
 
+  const dot = banner.querySelector('.update-banner-dot');
+  const installBtn = document.getElementById('update-banner-install');
+
   if (state.updateStatus === 'available' && state.updateVersion && !state.updateBannerDismissed) {
     document.getElementById('update-banner-text').textContent =
       `v${state.updateVersion} available`;
+    banner.classList.remove('update-banner--error');
+    if (dot) dot.style.background = '';
+    if (installBtn) installBtn.style.display = '';
+    banner.style.display = '';
+  } else if (state.updateStatus === 'error' && !state.updateBannerDismissed) {
+    document.getElementById('update-banner-text').textContent =
+      'Update check failed \u2014 see Settings for details';
+    banner.classList.add('update-banner--error');
+    if (dot) dot.style.background = 'var(--highlight)';
+    if (installBtn) installBtn.style.display = 'none';
     banner.style.display = '';
   } else {
+    banner.classList.remove('update-banner--error');
     banner.style.display = 'none';
   }
 }
@@ -1951,7 +1965,6 @@ async function renderUpdateStatus() {
     case 'error':
       dotClass = 'rag-red';
       label = 'Update check failed';
-      extra = `<span style="font-size:11px;color:var(--text-dim);margin-left:8px">${escapeHtml(state.updateError || 'Unknown error')}</span>`;
       break;
     case 'checking':
     default:
@@ -1959,6 +1972,12 @@ async function renderUpdateStatus() {
       label = 'Checking for updates...';
       break;
   }
+
+  const errorDetail = status === 'error' ? `
+    <div class="update-error-detail">
+      <span class="update-error-text">${escapeHtml(state.updateError || 'Unknown error')}</span>
+      <button class="btn btn-tiny" id="settings-copy-update-error" title="Copy error to clipboard">Copy Error</button>
+    </div>` : '';
 
   el.innerHTML = `
     <div class="update-status-row">
@@ -1969,7 +1988,7 @@ async function renderUpdateStatus() {
         ${extra}
       </div>
       <button class="btn btn-tiny" id="settings-check-update" title="Check now">Check</button>
-    </div>`;
+    </div>${errorDetail}`;
 
   document.getElementById('settings-check-update')?.addEventListener('click', async (e) => {
     e.target.disabled = true;
@@ -1979,6 +1998,16 @@ async function renderUpdateStatus() {
   });
 
   document.getElementById('settings-install-update')?.addEventListener('click', installUpdate);
+
+  document.getElementById('settings-copy-update-error')?.addEventListener('click', async (e) => {
+    try {
+      await navigator.clipboard.writeText(state.updateError || 'Unknown error');
+      e.target.textContent = 'Copied';
+      setTimeout(() => { e.target.textContent = 'Copy Error'; }, 1500);
+    } catch {
+      showToast('Failed to copy to clipboard', 'error');
+    }
+  });
 }
 
 function renderSettingsConnections() {
