@@ -89,6 +89,157 @@ fn repo_name_from_url(url: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Rate-limit handling helpers
+// ---------------------------------------------------------------------------
+
+/// Threshold below which we log a warning about remaining rate-limit quota.
+const RATE_LIMIT_WARN_THRESHOLD: u64 = 5;
+
+/// Maximum number of retries when we hit a rate limit (403).
+const RATE_LIMIT_MAX_RETRIES: u32 = 2;
+
+/// Extract rate-limit metadata from response headers.
+struct RateLimitInfo {
+    remaining: Option<u64>,
+    reset_timestamp: Option<i64>,
+}
+
+impl RateLimitInfo {
+    fn from_headers(headers: &reqwest::header::HeaderMap) -> Self {
+        let remaining = headers
+            .get("x-ratelimit-remaining")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+
+        let reset_timestamp = headers
+            .get("x-ratelimit-reset")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<i64>().ok());
+
+        Self {
+            remaining,
+            reset_timestamp,
+        }
+    }
+
+    /// Log a warning if remaining requests are low but not zero.
+    fn warn_if_low(&self, context: &str) {
+        if let Some(remaining) = self.remaining {
+            if remaining > 0 && remaining <= RATE_LIMIT_WARN_THRESHOLD {
+                tracing::warn!(
+                    "github: {context} — rate limit nearly exhausted ({remaining} requests remaining)"
+                );
+            }
+        }
+    }
+
+    /// Compute how many seconds to wait before retrying, based on `X-RateLimit-Reset`
+    /// or `Retry-After` header (the latter takes priority if present).
+    fn retry_after_secs(&self, headers: &reqwest::header::HeaderMap) -> u64 {
+        // Prefer Retry-After header (seconds) if present
+        if let Some(secs) = headers
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            return secs.min(120); // cap at 2 minutes
+        }
+
+        // Fall back to X-RateLimit-Reset (unix timestamp)
+        if let Some(reset) = self.reset_timestamp {
+            let now = Utc::now().timestamp();
+            if reset > now {
+                return ((reset - now) as u64).min(120);
+            }
+        }
+
+        // Default: wait 60 seconds
+        60
+    }
+}
+
+/// Send a GET request with rate-limit awareness: logs warnings when quota is low,
+/// and retries with backoff on 403 rate-limit responses.
+///
+/// Returns the successful `reqwest::Response` or an error.
+async fn rate_limited_get(
+    client: &reqwest::Client,
+    url: &str,
+    context: &str,
+) -> Result<reqwest::Response, IntegrationError> {
+    let mut retries = 0u32;
+
+    loop {
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| IntegrationError::Network(e.to_string()))?;
+
+        let status = response.status();
+        let rate_info = RateLimitInfo::from_headers(response.headers());
+
+        // Check for rate-limit (403 with remaining == 0, or 429)
+        if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            if let Some(0) = rate_info.remaining {
+                let wait = rate_info.retry_after_secs(response.headers());
+
+                if retries < RATE_LIMIT_MAX_RETRIES {
+                    retries += 1;
+                    tracing::warn!(
+                        "github: {context} — rate limited (attempt {retries}/{RATE_LIMIT_MAX_RETRIES}), \
+                         waiting {wait}s before retry"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                    continue;
+                }
+
+                tracing::error!(
+                    "github: {context} — rate limited, exhausted {RATE_LIMIT_MAX_RETRIES} retries"
+                );
+                return Err(IntegrationError::RateLimit {
+                    retry_after_secs: wait,
+                });
+            }
+
+            // 429 without remaining==0 header — still a rate limit
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let wait = rate_info.retry_after_secs(response.headers());
+                if retries < RATE_LIMIT_MAX_RETRIES {
+                    retries += 1;
+                    tracing::warn!(
+                        "github: {context} — 429 rate limited (attempt {retries}/{RATE_LIMIT_MAX_RETRIES}), \
+                         waiting {wait}s before retry"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                    continue;
+                }
+                return Err(IntegrationError::RateLimit {
+                    retry_after_secs: wait,
+                });
+            }
+        }
+
+        // Not rate-limited — log a warning if quota is running low
+        rate_info.warn_if_low(context);
+
+        return Ok(response);
+    }
+}
+
+/// Convenience wrapper that returns a simpler `Result<reqwest::Response, String>` for
+/// the standalone functions (`fetch_open_prs`, `fetch_github_issues`) that don't use
+/// `IntegrationError`.
+async fn rate_limited_get_simple(
+    client: &reqwest::Client,
+    url: &str,
+    context: &str,
+) -> Result<reqwest::Response, String> {
+    rate_limited_get(client, url, context)
+        .await
+        .map_err(|e| format!("{e}"))
+}
 pub struct GitHubIntegration {
     client: reqwest::Client,
     #[allow(dead_code)]
@@ -171,45 +322,12 @@ impl Integration for GitHubIntegration {
                 self.username
             );
 
-            let response = self
-                .client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| IntegrationError::Network(e.to_string()))?;
+            let context = format!("events page {page}");
+            let response = rate_limited_get(&self.client, &url, &context).await?;
 
             let status = response.status();
 
-            if status == reqwest::StatusCode::UNAUTHORIZED
-                || status == reqwest::StatusCode::FORBIDDEN
-            {
-                // Check for rate limit vs auth error.
-                if let Some(remaining) = response
-                    .headers()
-                    .get("x-ratelimit-remaining")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                {
-                    if remaining == 0 {
-                        let retry_after = response
-                            .headers()
-                            .get("x-ratelimit-reset")
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|v| v.parse::<i64>().ok())
-                            .map(|reset| {
-                                let now = Utc::now().timestamp();
-                                if reset > now {
-                                    (reset - now) as u64
-                                } else {
-                                    60
-                                }
-                            })
-                            .unwrap_or(60);
-                        return Err(IntegrationError::RateLimit {
-                            retry_after_secs: retry_after,
-                        });
-                    }
-                }
+            if status == reqwest::StatusCode::UNAUTHORIZED {
                 let body = response.text().await.unwrap_or_default();
                 return Err(IntegrationError::Auth(format!(
                     "GitHub returned {status}: {body}"
@@ -315,12 +433,7 @@ impl GitHubIntegration {
             urlencoding::encode(&query)
         );
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| IntegrationError::Network(e.to_string()))?;
+        let response = rate_limited_get(&self.client, &url, "search authored PRs").await?;
 
         if !response.status().is_success() {
             let body = response.text().await.unwrap_or_default();
@@ -460,12 +573,8 @@ impl GitHubIntegration {
                 encoded_query
             );
 
-            let response = self
-                .client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| IntegrationError::Network(e.to_string()))?;
+            let context = format!("search involved issues page {page}");
+            let response = rate_limited_get(&self.client, &url, &context).await?;
 
             if !response.status().is_success() {
                 let body = response.text().await.unwrap_or_default();
@@ -563,7 +672,8 @@ impl GitHubIntegration {
 async fn check_graphite_merge_static(client: &reqwest::Client, repo: &str, pr_number: u64) -> bool {
     tracing::debug!("github: checking if PR #{pr_number} in {repo} was Graphite-merged");
     let url = format!("https://api.github.com/repos/{repo}/pulls/{pr_number}");
-    let resp = match client.get(&url).send().await {
+    let context = format!("check graphite merge PR #{pr_number}");
+    let resp = match rate_limited_get(client, &url, &context).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("github: failed to fetch PR #{pr_number}: {e}");
@@ -591,7 +701,8 @@ async fn check_graphite_merge_static(client: &reqwest::Client, repo: &str, pr_nu
         None => return false,
     };
     let branch_url = format!("https://api.github.com/repos/{repo}/git/ref/heads/{head_ref}");
-    let branch_deleted = match client.get(&branch_url).send().await {
+    let branch_context = format!("check branch ref for PR #{pr_number}");
+    let branch_deleted = match rate_limited_get(client, &branch_url, &branch_context).await {
         Ok(r) => r.status() == reqwest::StatusCode::NOT_FOUND,
         Err(_) => false,
     };
@@ -856,8 +967,7 @@ pub async fn fetch_open_prs(config: &crate::config::AppConfig) -> Result<Vec<Ope
         urlencoding::encode(&query)
     );
 
-    let response = client.get(&url).send().await
-        .map_err(|e| format!("GitHub request failed: {e}"))?;
+    let response = rate_limited_get_simple(&client, &url, "search open PRs").await?;
 
     if !response.status().is_success() {
         let text = response.text().await.unwrap_or_default();
@@ -939,8 +1049,7 @@ pub async fn fetch_github_issues(config: &crate::config::AppConfig) -> Result<Ve
         urlencoding::encode(&query)
     );
 
-    let response = client.get(&url).send().await
-        .map_err(|e| format!("GitHub request failed: {e}"))?;
+    let response = rate_limited_get_simple(&client, &url, "search assigned issues").await?;
 
     if !response.status().is_success() {
         let text = response.text().await.unwrap_or_default();
