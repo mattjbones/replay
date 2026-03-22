@@ -314,6 +314,24 @@ pub fn query_dow_project(
 }
 
 /// Maps a rusqlite row to an Activity struct.
+/// Returns all activities ordered by occurred_at DESC (capped at 2000 for debug use).
+pub fn get_all_activities(db: &Database) -> rusqlite::Result<Vec<Activity>> {
+    let conn = db.conn.lock().map_err(|e| {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_LOCKED),
+            Some(format!("mutex poisoned: {e}")),
+        )
+    })?;
+    let mut stmt = conn.prepare(
+        "SELECT id, source, source_id, kind, title, description, url, project, occurred_at, metadata, synced_at
+         FROM activities
+         ORDER BY occurred_at DESC
+         LIMIT 2000",
+    )?;
+    let rows = stmt.query_map([], row_to_activity)?;
+    rows.collect()
+}
+
 fn row_to_activity(row: &rusqlite::Row) -> rusqlite::Result<Activity> {
     let source_str: String = row.get(1)?;
     let kind_str: String = row.get(3)?;

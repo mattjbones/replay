@@ -230,6 +230,22 @@
           </div>
         </div>
 
+        <!-- Issues (assigned to user) -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-label">Issues</span>
+            <span id="github-issue-count" class="activity-count"></span>
+          </div>
+          <div class="activity-table-wrapper" style="max-height:600px">
+            <table class="activity-table">
+              <thead><tr>
+                <th style="width:100px">Status</th><th>Title</th><th style="width:140px">Repo</th><th style="width:80px">Updated</th>
+              </tr></thead>
+              <tbody id="github-issue-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
         <!-- Open / Draft PRs -->
         <div class="card">
           <div class="card-header">
@@ -473,6 +489,7 @@
         <button id="settings-close" class="btn btn-icon">&times;</button>
       </div>
       <div class="settings-body">
+        <div id="settings-update-status" class="settings-update-status"></div>
         <div class="settings-section">
           <h3 class="settings-section-title">Connections</h3>
           <div id="settings-auth-list" class="auth-list"></div>

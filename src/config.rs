@@ -196,10 +196,25 @@ fn default_cold_minutes() -> i64 {
 // Integration configs
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GitHubWorkflow {
+    Pr,
+    Trunk,
+}
+
+impl Default for GitHubWorkflow {
+    fn default() -> Self {
+        GitHubWorkflow::Pr
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GitHubConfig {
     #[serde(default)]
     pub username: Option<String>,
+    #[serde(default)]
+    pub workflow: GitHubWorkflow,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

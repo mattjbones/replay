@@ -160,6 +160,13 @@ pub async fn exchange_slack_refresh_token(
 }
 
 #[tauri::command]
+pub async fn get_all_activities(
+    state: State<'_, AppState>,
+) -> Result<Vec<Activity>, String> {
+    crate::db::get_all_activities(&state.db).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn clear_cache(state: State<'_, AppState>) -> Result<(), String> {
     let conn = state.db.conn.lock().map_err(|e| e.to_string())?;
 
@@ -460,6 +467,14 @@ pub async fn get_open_prs(
 ) -> Result<Vec<crate::integrations::github::OpenPr>, String> {
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
     crate::integrations::github::fetch_open_prs(&config).await
+}
+
+#[tauri::command]
+pub async fn get_github_issues(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::integrations::github::GitHubIssue>, String> {
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
+    crate::integrations::github::fetch_github_issues(&config).await
 }
 
 #[tauri::command]
