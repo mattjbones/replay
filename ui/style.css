@@ -2029,6 +2029,68 @@ body {
   line-height: 1.65;
 }
 
+/* ===== Disconnected Overlay ===== */
+.disconnected-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  padding: 40px;
+}
+
+/* ===== Update Status (RAG) ===== */
+.settings-update-status {
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: var(--accent);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.update-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.update-status-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rag-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.rag-green  { background: var(--status-completed); box-shadow: 0 0 6px var(--status-completed); }
+.rag-amber  { background: var(--status-open);      box-shadow: 0 0 6px var(--status-open); }
+.rag-red    { background: var(--highlight);         box-shadow: 0 0 6px var(--highlight); }
+.rag-checking {
+  background: var(--text-dim);
+  animation: rag-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes rag-pulse {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
+}
+
+.update-version {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: monospace;
+}
+
+.update-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 /* ===== Nav tab active colours for new tabs ===== */
 .nav-tab.active[data-view="slack"]  { border-bottom-color: var(--slack); }
 .nav-tab.active[data-view="notion"] { border-bottom-color: var(--notion); }

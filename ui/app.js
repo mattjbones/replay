@@ -11,22 +11,47 @@ async function invoke(cmd, args = {}) {
 
 // ===== Auto-Update =====
 
-async function checkForUpdates() {
+// updateStatus: "checking" | "up_to_date" | "available" | "error"
+async function checkForUpdates(silent = true) {
+  state.updateStatus = 'checking';
+  state.updateVersion = null;
+  state.updateError = null;
+  state._updateObj = null;
   try {
     const { check } = window.__TAURI__.updater;
     const update = await check();
     if (update?.available) {
-      const shouldUpdate = confirm(
-        `A new version (${update.version}) is available. Update now?`
-      );
-      if (shouldUpdate) {
-        await update.downloadAndInstall();
-        const { relaunch } = window.__TAURI__.process;
-        await relaunch();
+      state.updateStatus = 'available';
+      state.updateVersion = update.version;
+      state._updateObj = update;
+      if (!silent) {
+        const shouldUpdate = confirm(
+          `A new version (${update.version}) is available. Update now?`
+        );
+        if (shouldUpdate) {
+          await update.downloadAndInstall();
+          const { relaunch } = window.__TAURI__.process;
+          await relaunch();
+        }
       }
+    } else {
+      state.updateStatus = 'up_to_date';
     }
   } catch (e) {
     console.warn("Update check failed:", e);
+    state.updateStatus = 'error';
+    state.updateError = String(e);
+  }
+}
+
+async function installUpdate() {
+  if (!state._updateObj) return;
+  try {
+    await state._updateObj.downloadAndInstall();
+    const { relaunch } = window.__TAURI__.process;
+    await relaunch();
+  } catch (e) {
+    showToast(`Update failed: ${e}`, 'error');
   }
 }
 
@@ -508,6 +533,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     githubReviewCount: $("#github-review-count"),
     githubOpenPrTbody: $("#github-open-pr-tbody"),
     githubOpenPrCount: $("#github-open-pr-count"),
+    githubIssueTbody: $("#github-issue-tbody"),
+    githubIssueCount: $("#github-issue-count"),
 
     // Linear view
     linearStats: $("#linear-stats"),
@@ -734,8 +761,77 @@ function loadViewData(view) {
   }
 }
 
+function renderNotConnectedPlaceholder(container, serviceName) {
+  container.innerHTML = `
+    <div class="coming-soon-view">
+      <div class="coming-soon-content">
+        <svg class="coming-soon-robot" viewBox="0 0 120 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="30" y="40" width="60" height="50" rx="10" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+          <rect x="40" y="52" width="14" height="14" rx="4" fill="var(--highlight)"/>
+          <rect x="66" y="52" width="14" height="14" rx="4" fill="var(--highlight)"/>
+          <!-- confused mouth (squiggly) -->
+          <path d="M45 76 Q50 72 55 76 Q60 80 65 76 Q70 72 75 76" stroke="var(--border)" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+          <!-- question marks -->
+          <text x="22" y="46" fill="var(--text-dim)" font-size="16" font-weight="bold">?</text>
+          <text x="92" y="46" fill="var(--text-dim)" font-size="16" font-weight="bold">?</text>
+          <rect x="52" y="30" width="16" height="12" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+          <circle cx="60" cy="28" r="4" fill="var(--highlight)"/>
+          <rect x="10" y="55" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+          <rect x="92" y="55" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+          <rect x="40" y="90" width="12" height="30" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+          <rect x="68" y="90" width="12" height="30" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+          <rect x="36" y="116" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+          <rect x="66" y="116" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+        </svg>
+        <div class="coming-soon-text">
+          <h2>${escapeHtml(serviceName)} Not Connected</h2>
+          <p class="coming-soon-badge" style="background:var(--highlight)">Not Connected</p>
+          <p class="coming-soon-desc">Connect ${escapeHtml(serviceName)} in Settings to see your activity here.</p>
+          <button class="btn" style="margin-top:12px" onclick="document.getElementById('action-settings').click()">Open Settings</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function ensureDisconnectedOverlay(viewId, serviceName) {
+  const section = document.getElementById(`view-${viewId}`);
+  if (!section) return null;
+  let overlay = section.querySelector('.disconnected-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.className = 'disconnected-overlay';
+    renderNotConnectedPlaceholder(overlay, serviceName);
+    section.appendChild(overlay);
+  }
+  return overlay;
+}
+
 function renderSourceView(view) {
   const activities = state.digest?.activities || [];
+
+  // Show "not connected" placeholder if the integration is disconnected
+  const checks = { github: 'GitHub', linear: 'Linear' };
+  if (checks[view] && !state.authStatus[view]) {
+    const section = document.getElementById(`view-${view}`);
+    if (section) {
+      const sourceView = section.querySelector('.source-view');
+      const overlay = ensureDisconnectedOverlay(view, checks[view]);
+      if (sourceView) sourceView.style.display = 'none';
+      if (overlay) overlay.style.display = '';
+    }
+    return;
+  }
+  // Restore source view if previously hidden
+  if (checks[view]) {
+    const section = document.getElementById(`view-${view}`);
+    if (section) {
+      const sourceView = section.querySelector('.source-view');
+      const overlay = section.querySelector('.disconnected-overlay');
+      if (sourceView) sourceView.style.display = '';
+      if (overlay) overlay.style.display = 'none';
+    }
+  }
+
   if (view === 'github') renderGitHubView(activities.filter(a => a.source === 'github'));
   else if (view === 'linear') renderLinearView(activities.filter(a => a.source === 'linear'));
   else if (view === 'slack') renderSlackView(activities.filter(a => a.source === 'slack'));
@@ -898,9 +994,29 @@ function renderHeadlineMetrics(digest) {
 
 // ===== Activity Over Time Chart =====
 
+function showNoData(canvas, message) {
+  if (!canvas) return;
+  canvas.style.display = 'none';
+  let noData = canvas.parentElement.querySelector('.no-data');
+  if (!noData) {
+    noData = document.createElement('div');
+    noData.className = 'no-data';
+    canvas.parentElement.appendChild(noData);
+  }
+  noData.textContent = message;
+  noData.style.display = '';
+}
+
+function restoreCanvas(canvas) {
+  if (!canvas) return;
+  canvas.style.display = '';
+  const noData = canvas.parentElement?.querySelector('.no-data');
+  if (noData) noData.style.display = 'none';
+}
+
 function renderActivityChart(chartData) {
   if (!chartData || !chartData.labels || !chartData.datasets) {
-    dom.chartActivity.parentElement.innerHTML = '<div class="no-data">No chart data available</div>';
+    showNoData(dom.chartActivity, 'No chart data available');
     return;
   }
 
@@ -908,6 +1024,7 @@ function renderActivityChart(chartData) {
     dom.chartActivity.parentElement.innerHTML = renderFallbackStats(chartData);
     return;
   }
+  restoreCanvas(dom.chartActivity);
 
   if (state.charts.activity) {
     state.charts.activity.destroy();
@@ -1225,6 +1342,8 @@ function formatKind(kind) {
 // ===== GitHub View =====
 
 function renderGitHubView(activities) {
+  const isTrunk = state.config?.github?.workflow === 'trunk';
+
   // Store on state for filter callbacks
   state._ghPrs = activities.filter(a => ['pr_opened', 'pr_merged'].includes(a.kind));
   state._ghCommits = activities.filter(a => a.kind === 'commit_pushed');
@@ -1236,13 +1355,39 @@ function renderGitHubView(activities) {
   const merged = prs.filter(p => p.kind === 'pr_merged').length;
   const opened = prs.filter(p => p.kind === 'pr_opened').length;
 
-  // Stats row
-  dom.githubStats.innerHTML = renderStatCards([
-    { value: prs.length, label: 'Pull Requests' },
-    { value: merged, label: 'Merged' },
-    { value: reviews.length, label: 'Reviews' },
-    { value: commits.length, label: 'Commits' },
-  ]);
+  // Stats row — reorder based on workflow
+  const statCards = isTrunk
+    ? [
+        { value: commits.length, label: 'Commits' },
+        { value: prs.length, label: 'Pull Requests' },
+        { value: reviews.length, label: 'Reviews' },
+        { value: merged, label: 'Merged' },
+      ]
+    : [
+        { value: prs.length, label: 'Pull Requests' },
+        { value: merged, label: 'Merged' },
+        { value: reviews.length, label: 'Reviews' },
+        { value: commits.length, label: 'Commits' },
+      ];
+  dom.githubStats.innerHTML = renderStatCards(statCards);
+
+  // Reorder cards: trunk puts commits first, PR-based puts PRs first
+  const sourceView = document.querySelector('#view-github .source-view');
+  if (sourceView) {
+    const cards = [...sourceView.querySelectorAll(':scope > .card')];
+    // Cards are: [stats-row, PR table, Commits table, Reviews table, Issues table, Open PRs]
+    // Find cards by their header label
+    const findCard = (label) => cards.find(c => c.querySelector('.card-label')?.textContent?.trim() === label);
+    const prCard = findCard('Pull Requests');
+    const commitCard = findCard('Commits');
+    if (isTrunk && commitCard && prCard) {
+      // Move commits card before PRs card
+      sourceView.insertBefore(commitCard, prCard);
+    } else if (!isTrunk && prCard && commitCard) {
+      // Ensure PRs card is before commits card
+      sourceView.insertBefore(prCard, commitCard);
+    }
+  }
 
   // Status + CC combined filter bar
   const ccFilterEl = document.getElementById('github-cc-filters');
@@ -1301,8 +1446,9 @@ function renderGitHubView(activities) {
     <td><span class="time-dim">${relativeTime(r.occurred_at)}</span></td>
   </tr>`).join('');
 
-  // Fetch open/draft PRs (independent of date range)
+  // Fetch open/draft PRs and issues (independent of date range)
   fetchOpenPrs();
+  fetchGitHubIssues();
 }
 
 async function fetchOpenPrs() {
@@ -1332,6 +1478,32 @@ async function fetchOpenPrs() {
     }).join('');
   } catch (err) {
     dom.githubOpenPrTbody.innerHTML = `<tr><td colspan="5" class="no-data">${escapeHtml(String(err))}</td></tr>`;
+  }
+}
+
+async function fetchGitHubIssues() {
+  dom.githubIssueTbody.innerHTML = '<tr><td colspan="4" class="no-data">Loading...</td></tr>';
+  dom.githubIssueCount.textContent = '';
+  try {
+    const issues = await invoke('get_github_issues');
+    dom.githubIssueCount.textContent = `${issues.length} issues`;
+    if (!issues.length) {
+      dom.githubIssueTbody.innerHTML = '<tr><td colspan="4" class="no-data">No open issues</td></tr>';
+      return;
+    }
+    dom.githubIssueTbody.innerHTML = issues.map(issue => {
+      const labelsHtml = issue.labels.length
+        ? issue.labels.map(l => `<span class="cc-tag">${escapeHtml(l)}</span>`).join(' ')
+        : '';
+      return `<tr>
+        <td><span class="kind-badge kind-open">Open</span> ${labelsHtml}</td>
+        <td style="max-width:400px">${issue.url ? `<a class="activity-title-link" href="${escapeAttr(issue.url)}" target="_blank">${escapeHtml(issue.title)}</a>` : escapeHtml(issue.title)}</td>
+        <td><span class="project-tag">${escapeHtml(issue.repo)}</span></td>
+        <td><span class="time-dim">${relativeTime(issue.updated_at)}</span></td>
+      </tr>`;
+    }).join('');
+  } catch (err) {
+    dom.githubIssueTbody.innerHTML = `<tr><td colspan="4" class="no-data">${escapeHtml(String(err))}</td></tr>`;
   }
 }
 
@@ -1593,8 +1765,67 @@ async function openSettingsModal() {
     state.config = await invoke('get_config');
   } catch {}
   await refreshAuthStatus();
+  renderUpdateStatus();
   renderSettingsConnections();
   renderSettingsPrefs();
+}
+
+async function renderUpdateStatus() {
+  const el = document.getElementById('settings-update-status');
+  if (!el) return;
+
+  let currentVersion = '0.0.0';
+  try {
+    // Tauri v2: getVersion() is async
+    if (window.__TAURI__?.app?.getVersion) {
+      currentVersion = await window.__TAURI__.app.getVersion();
+    }
+  } catch {}
+
+  const status = state.updateStatus || 'checking';
+  let dotClass, label, extra = '';
+
+  switch (status) {
+    case 'up_to_date':
+      dotClass = 'rag-green';
+      label = 'Up to date';
+      break;
+    case 'available':
+      dotClass = 'rag-amber';
+      label = `Update available: v${state.updateVersion}`;
+      extra = `<button class="btn btn-small btn-highlight" id="settings-install-update" style="margin-left:8px">Install &amp; Restart</button>`;
+      break;
+    case 'error':
+      dotClass = 'rag-red';
+      label = 'Update check failed';
+      extra = `<span style="font-size:11px;color:var(--text-dim);margin-left:8px">${escapeHtml(state.updateError || 'Unknown error')}</span>`;
+      break;
+    case 'checking':
+    default:
+      dotClass = 'rag-checking';
+      label = 'Checking for updates...';
+      break;
+  }
+
+  el.innerHTML = `
+    <div class="update-status-row">
+      <div class="update-status-left">
+        <span class="rag-dot ${dotClass}"></span>
+        <span class="update-version">v${escapeHtml(currentVersion)}</span>
+        <span class="update-label">${label}</span>
+        ${extra}
+      </div>
+      <button class="btn btn-tiny" id="settings-check-update" title="Check now">Check</button>
+    </div>`;
+
+  document.getElementById('settings-check-update')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = '...';
+    await checkForUpdates(true);
+    renderUpdateStatus();
+  });
+
+  document.getElementById('settings-install-update')?.addEventListener('click', installUpdate);
 }
 
 function renderSettingsConnections() {
@@ -1723,6 +1954,14 @@ function renderSettingsPrefs() {
       <input class="pref-input" type="text" id="pref-gh-username" value="${escapeAttr(c.github?.username || '')}" placeholder="Auto-detected from gh CLI">
     </div>
     <div class="pref-row">
+      <label class="pref-label">GitHub workflow</label>
+      <select class="pref-input" id="pref-gh-workflow">
+        <option value="pr"${(c.github?.workflow || 'pr') === 'pr' ? ' selected' : ''}>PR-based (feature branches)</option>
+        <option value="trunk"${c.github?.workflow === 'trunk' ? ' selected' : ''}>Trunk-based (commits to main)</option>
+      </select>
+      <div class="pref-hint">PR-based shows PRs first; trunk-based emphasizes commits</div>
+    </div>
+    <div class="pref-row">
       <label class="pref-label">Slack user ID</label>
       <input class="pref-input" type="text" id="pref-slack-userid" value="${escapeAttr(c.slack?.user_id || '')}" placeholder="U...">
     </div>
@@ -1756,6 +1995,27 @@ function renderSettingsPrefs() {
       <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Clear all synced activities, LLM summaries, and sync cursors. Tokens are kept.</div>
       <button class="btn btn-danger" id="pref-clear-cache-btn">Clear Cached Data</button>
     </div>
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
+      <div class="pref-section-divider">Debug</div>
+      <button class="btn" id="debug-show-activities-btn">Show All Activities</button>
+      <div id="debug-activities-panel" style="display:none;margin-top:12px">
+        <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+          <input class="pref-input" type="text" id="debug-filter" placeholder="Filter by title, source, kind, project..." style="flex:1;min-width:200px">
+          <select class="pref-input" id="debug-source-filter" style="width:auto">
+            <option value="">All sources</option>
+            <option value="github">GitHub</option>
+            <option value="linear">Linear</option>
+            <option value="slack">Slack</option>
+            <option value="notion">Notion</option>
+          </select>
+          <select class="pref-input" id="debug-kind-filter" style="width:auto">
+            <option value="">All kinds</option>
+          </select>
+          <span id="debug-count" style="font-size:11px;color:var(--text-dim);align-self:center"></span>
+        </div>
+        <div id="debug-activities-table" style="max-height:70vh;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)"></div>
+      </div>
+    </div>
   `;
   document.getElementById('pref-save-btn')?.addEventListener('click', savePreferences);
   const clearBtn = document.getElementById('pref-clear-cache-btn');
@@ -1785,6 +2045,111 @@ function renderSettingsPrefs() {
       );
     });
   }
+
+  // Debug: show all activities
+  const debugBtn = document.getElementById('debug-show-activities-btn');
+  if (debugBtn) {
+    debugBtn.addEventListener('click', async () => {
+      const panel = document.getElementById('debug-activities-panel');
+      if (panel.style.display !== 'none') {
+        panel.style.display = 'none';
+        debugBtn.textContent = 'Show All Activities';
+        return;
+      }
+      debugBtn.textContent = 'Loading...';
+      debugBtn.disabled = true;
+      try {
+        const activities = await invoke('get_all_activities');
+        state._debugActivities = activities;
+        panel.style.display = '';
+        debugBtn.textContent = 'Hide Activities';
+
+        // Populate kind filter with unique kinds
+        const kindFilter = document.getElementById('debug-kind-filter');
+        const kinds = [...new Set(activities.map(a => a.kind))].sort();
+        kindFilter.innerHTML = '<option value="">All kinds</option>' +
+          kinds.map(k => `<option value="${k}">${k}</option>`).join('');
+
+        renderDebugActivities();
+
+        // Bind filter events
+        document.getElementById('debug-filter')?.addEventListener('input', renderDebugActivities);
+        document.getElementById('debug-source-filter')?.addEventListener('change', renderDebugActivities);
+        document.getElementById('debug-kind-filter')?.addEventListener('change', renderDebugActivities);
+      } catch (err) {
+        showToast(`Failed to load activities: ${err}`, 'error');
+        debugBtn.textContent = 'Show All Activities';
+      } finally {
+        debugBtn.disabled = false;
+      }
+    });
+  }
+}
+
+const DEBUG_PAGE_SIZE = 100;
+
+function renderDebugActivities() {
+  const activities = state._debugActivities || [];
+  const textFilter = (document.getElementById('debug-filter')?.value || '').toLowerCase();
+  const sourceFilter = document.getElementById('debug-source-filter')?.value || '';
+  const kindFilter = document.getElementById('debug-kind-filter')?.value || '';
+
+  const filtered = activities.filter(a => {
+    if (sourceFilter && a.source !== sourceFilter) return false;
+    if (kindFilter && a.kind !== kindFilter) return false;
+    if (textFilter) {
+      const haystack = `${a.title} ${a.source} ${a.kind} ${a.project || ''} ${a.source_id}`.toLowerCase();
+      if (!haystack.includes(textFilter)) return false;
+    }
+    return true;
+  });
+
+  // Reset page when filters change
+  state._debugPage = 1;
+  state._debugFiltered = filtered;
+
+  document.getElementById('debug-count').textContent = `${filtered.length} / ${activities.length} activities`;
+
+  renderDebugPage();
+}
+
+function renderDebugPage() {
+  const filtered = state._debugFiltered || [];
+  const page = state._debugPage || 1;
+  const visible = filtered.slice(0, page * DEBUG_PAGE_SIZE);
+  const hasMore = visible.length < filtered.length;
+
+  const table = document.getElementById('debug-activities-table');
+  if (!filtered.length) {
+    table.innerHTML = '<div class="no-data" style="padding:20px">No matching activities</div>';
+    return;
+  }
+
+  table.innerHTML = `<table class="activity-table" style="font-size:11px">
+    <thead><tr>
+      <th style="width:70px">Source</th>
+      <th style="width:110px">Kind</th>
+      <th>Title</th>
+      <th style="width:120px">Project</th>
+      <th style="width:70px">Date</th>
+      <th style="width:160px">Source ID</th>
+    </tr></thead>
+    <tbody>${visible.map(a => `<tr>
+      <td><span style="color:var(--${a.source})">${escapeHtml(a.source)}</span></td>
+      <td><span class="kind-badge ${KIND_CLASSES[a.kind] || ''}" style="font-size:9px">${KIND_LABELS[a.kind] || a.kind}</span></td>
+      <td style="max-width:300px">${a.url ? `<a class="activity-title-link" href="${escapeAttr(a.url)}" target="_blank">${escapeHtml(a.title)}</a>` : escapeHtml(a.title)}</td>
+      <td>${a.project ? `<span class="project-tag">${escapeHtml(a.project)}</span>` : '—'}</td>
+      <td><span class="time-dim">${new Date(a.occurred_at).toLocaleDateString()}</span></td>
+      <td style="font-family:monospace;font-size:9px;color:var(--text-dim);word-break:break-all">${escapeHtml(a.source_id)}</td>
+    </tr>`).join('')}</tbody>
+  </table>${hasMore ? `<div style="text-align:center;padding:8px">
+    <button class="btn btn-small" id="debug-load-more">Show ${Math.min(DEBUG_PAGE_SIZE, filtered.length - visible.length)} more (${visible.length} / ${filtered.length})</button>
+  </div>` : `<div style="text-align:center;padding:6px;font-size:11px;color:var(--text-dim)">Showing all ${filtered.length} activities</div>`}`;
+
+  document.getElementById('debug-load-more')?.addEventListener('click', () => {
+    state._debugPage = (state._debugPage || 1) + 1;
+    renderDebugPage();
+  });
 }
 
 async function savePreferences() {
@@ -1793,6 +2158,7 @@ async function savePreferences() {
   state.config.schedule.daily_reminder_time = document.getElementById('pref-reminder-time')?.value || '17:00';
   const ghUsername = document.getElementById('pref-gh-username')?.value?.trim();
   state.config.github.username = ghUsername || null;
+  state.config.github.workflow = document.getElementById('pref-gh-workflow')?.value || 'pr';
   const slackUserId = document.getElementById('pref-slack-userid')?.value?.trim();
   state.config.slack.user_id = slackUserId || null;
   const ignoredStr = document.getElementById('pref-ignored-channels')?.value || '';
@@ -2206,10 +2572,11 @@ function renderVelocityChart(v) {
 function renderCycleTimeChart(cycleTime) {
   if (!hasChartJs()) return;
   if (state.charts.cycleTime) state.charts.cycleTime.destroy();
-  if (!cycleTime.length) {
-    dom.chartCycleTime.parentElement.innerHTML = '<div class="no-data">No cycle time data</div>';
+  if (!cycleTime || !cycleTime.length) {
+    showNoData(dom.chartCycleTime, 'No cycle time data');
     return;
   }
+  restoreCanvas(dom.chartCycleTime);
 
   const ctx = dom.chartCycleTime.getContext('2d');
   state.charts.cycleTime = new Chart(ctx, {

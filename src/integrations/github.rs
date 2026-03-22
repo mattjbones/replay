@@ -225,12 +225,18 @@ impl Integration for GitHubIntegration {
             Vec::new()
         });
 
-        // Deduplicate: only add PR activities whose source_id we haven't seen
+        // Supplement with issues the user is involved in (Search API)
+        let issue_activities = self.fetch_involved_issues(since_dt).await.unwrap_or_else(|e| {
+            tracing::warn!("github: failed to fetch involved issues: {e}");
+            Vec::new()
+        });
+
+        // Deduplicate: only add activities whose source_id we haven't seen
         let existing_ids: std::collections::HashSet<String> = all_activities
             .iter()
             .map(|a| a.source_id.clone())
             .collect();
-        for activity in pr_activities {
+        for activity in pr_activities.into_iter().chain(issue_activities) {
             if !existing_ids.contains(&activity.source_id) {
                 if latest_cursor.is_none() || Some(activity.occurred_at.to_rfc3339()) > latest_cursor {
                     latest_cursor = Some(activity.occurred_at.to_rfc3339());
@@ -259,8 +265,8 @@ impl GitHubIntegration {
         let since_str = since
             .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string())
             .unwrap_or_else(|| {
-                // On first sync (no cursor), look back 30 days to capture recent history
-                (Utc::now() - chrono::Duration::days(30))
+                // On first sync (no cursor), look back 90 days for 12-week trends
+                (Utc::now() - chrono::Duration::days(90))
                     .format("%Y-%m-%dT%H:%M:%S")
                     .to_string()
             });
@@ -393,6 +399,124 @@ impl GitHubIntegration {
         }
 
         tracing::info!("github: found {} authored PRs via search", activities.len());
+        Ok(activities)
+    }
+
+    /// Fetch issues the user is involved in (assigned, authored, mentioned) via the Search API.
+    /// Captures issue lifecycle events that the Events API misses.
+    async fn fetch_involved_issues(
+        &self,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<Activity>, IntegrationError> {
+        let since_str = since
+            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string())
+            .unwrap_or_else(|| {
+                // On first sync, look back 90 days for 12-week trends
+                (Utc::now() - chrono::Duration::days(90))
+                    .format("%Y-%m-%dT%H:%M:%S")
+                    .to_string()
+            });
+
+        let query = format!(
+            "involves:{} type:issue updated:>{}",
+            self.username, since_str
+        );
+        let encoded_query = urlencoding::encode(&query);
+
+        let mut all_items: Vec<serde_json::Value> = Vec::new();
+
+        // Paginate up to 3 pages (300 issues max)
+        for page in 1..=3 {
+            let url = format!(
+                "https://api.github.com/search/issues?q={}&sort=updated&order=desc&per_page=100&page={page}",
+                encoded_query
+            );
+
+            let response = self
+                .client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| IntegrationError::Network(e.to_string()))?;
+
+            if !response.status().is_success() {
+                let body = response.text().await.unwrap_or_default();
+                return Err(IntegrationError::Network(format!(
+                    "GitHub issue search returned {body}"
+                )));
+            }
+
+            let json: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|e| IntegrationError::Parse(e.to_string()))?;
+
+            let empty_vec = Vec::new();
+            let items = json["items"]
+                .as_array()
+                .unwrap_or(&empty_vec);
+
+            if items.is_empty() {
+                break;
+            }
+            all_items.extend(items.iter().cloned());
+
+            // If we got fewer than 100, no more pages
+            if items.len() < 100 {
+                break;
+            }
+        }
+
+        let mut activities = Vec::new();
+        for item in &all_items {
+            // Skip pull requests (search API returns PRs as issues too)
+            if item.get("pull_request").is_some() {
+                continue;
+            }
+
+            let number = item["number"].as_u64().unwrap_or(0);
+            let title = item["title"].as_str().unwrap_or("Untitled Issue").to_string();
+            let html_url = item["html_url"].as_str().unwrap_or_default().to_string();
+            let state = item["state"].as_str().unwrap_or_default().to_string();
+            let repo_url = item["repository_url"].as_str().unwrap_or_default();
+            let repo_name = repo_url.rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+
+            // Use closed_at for closed issues, created_at for open ones
+            let (kind, timestamp_str) = if state == "closed" {
+                let closed_at = item["closed_at"].as_str().unwrap_or_default();
+                (ActivityKind::IssueOpened, if closed_at.is_empty() {
+                    item["updated_at"].as_str().unwrap_or_default()
+                } else {
+                    closed_at
+                })
+            } else {
+                (ActivityKind::IssueOpened, item["created_at"].as_str().unwrap_or_default())
+            };
+
+            let occurred_at: DateTime<Utc> = timestamp_str
+                .parse()
+                .unwrap_or_else(|_| Utc::now());
+
+            let source_id = format!("issue:{}:{}", repo_name, number);
+
+            let mut activity = Activity::new(
+                Source::GitHub,
+                source_id,
+                kind,
+                title,
+                html_url,
+                occurred_at,
+            );
+            activity.project = Some(repo_name);
+            activity.metadata = serde_json::json!({
+                "issue_number": number,
+                "state": state,
+            });
+
+            activities.push(activity);
+        }
+
+        tracing::info!("github: found {} involved issues via search", activities.len());
         Ok(activities)
     }
 
@@ -633,11 +757,14 @@ fn parse_issues_event(
         .and_then(|a| a.as_str())
         .unwrap_or("");
 
-    if action != "opened" {
-        return None;
-    }
+    let kind = match action {
+        "opened" => ActivityKind::IssueOpened,
+        "closed" => ActivityKind::IssueOpened, // still IssueOpened kind — state tracked in metadata
+        _ => return None,
+    };
 
     let issue = payload.get("issue")?;
+    let number = issue.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
     let title = issue
         .get("title")
         .and_then(|t| t.as_str())
@@ -649,15 +776,22 @@ fn parse_issues_event(
         .unwrap_or("")
         .to_string();
 
+    // Use a stable source_id so Search API and Events API deduplicate
+    let source_id = format!("issue:{}:{}", event.repo.name, number);
+
     let mut activity = Activity::new(
         Source::GitHub,
-        event.id.clone(),
-        ActivityKind::IssueOpened,
+        source_id,
+        kind,
         title,
         url,
         occurred_at,
     );
     activity.project = Some(event.repo.name.clone());
+    activity.metadata = serde_json::json!({
+        "issue_number": number,
+        "state": if action == "closed" { "closed" } else { "open" },
+    });
 
     Some(activity)
 }
@@ -777,4 +911,116 @@ pub async fn fetch_open_prs(config: &crate::config::AppConfig) -> Result<Vec<Ope
     }
 
     Ok(prs)
+}
+
+// ---------------------------------------------------------------------------
+// GitHub Issues (assigned to user)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GitHubIssue {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub repo: String,
+    pub state: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub labels: Vec<String>,
+    pub comments: u64,
+}
+
+/// Fetch open issues assigned to the configured user.
+pub async fn fetch_github_issues(config: &crate::config::AppConfig) -> Result<Vec<GitHubIssue>, String> {
+    let token = crate::auth::AuthManager::get_github_token()
+        .ok()
+        .flatten()
+        .ok_or_else(|| "GitHub not connected".to_string())?;
+
+    let username_owned: String = config.github.username.clone()
+        .filter(|u| !u.is_empty())
+        .or_else(|| {
+            let gh_path = crate::auth::find_gh_binary()?;
+            std::process::Command::new(&gh_path)
+                .args(["api", "user", "--jq", ".login"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if s.is_empty() { None } else { Some(s) }
+                })
+        })
+        .ok_or_else(|| "No GitHub username configured".to_string())?;
+    let username = username_owned.as_str();
+
+    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {token}")).unwrap());
+    headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github.v3+json"));
+    headers.insert(USER_AGENT, HeaderValue::from_static("recap/0.1"));
+
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .map_err(|e| format!("Failed to build client: {e}"))?;
+
+    let query = format!("assignee:{username} type:issue state:open");
+    let url = format!(
+        "https://api.github.com/search/issues?q={}&sort=updated&order=desc&per_page=100",
+        urlencoding::encode(&query)
+    );
+
+    let response = client.get(&url).send().await
+        .map_err(|e| format!("GitHub request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("GitHub search error: {text}"));
+    }
+
+    let json: serde_json::Value = response.json().await
+        .map_err(|e| format!("Failed to parse response: {e}"))?;
+
+    let empty_vec = Vec::new();
+    let items = json["items"].as_array().unwrap_or(&empty_vec);
+
+    let mut issues: Vec<GitHubIssue> = Vec::new();
+
+    for item in items {
+        // Skip pull requests (the search API returns PRs as issues too)
+        if item.get("pull_request").is_some() {
+            continue;
+        }
+
+        let number = item["number"].as_u64().unwrap_or(0);
+        let title = item["title"].as_str().unwrap_or("Untitled").to_string();
+        let html_url = item["html_url"].as_str().unwrap_or_default().to_string();
+        let repo_url = item["repository_url"].as_str().unwrap_or_default();
+        let repo = repo_url.rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+        let created_at = item["created_at"].as_str().unwrap_or_default().to_string();
+        let updated_at = item["updated_at"].as_str().unwrap_or_default().to_string();
+        let comments = item["comments"].as_u64().unwrap_or(0);
+
+        let labels: Vec<String> = item["labels"]
+            .as_array()
+            .unwrap_or(&empty_vec)
+            .iter()
+            .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
+            .collect();
+
+        issues.push(GitHubIssue {
+            number,
+            title,
+            url: html_url,
+            repo,
+            state: "open".to_string(),
+            created_at,
+            updated_at,
+            labels,
+            comments,
+        });
+    }
+
+    Ok(issues)
 }
