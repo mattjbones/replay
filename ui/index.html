@@ -305,23 +305,7 @@
     <!-- View: Slack -->
     <section id="view-slack" class="view-section" style="display:none">
       <div class="coming-soon-view">
-        <div class="coming-soon-content">
-          <svg class="coming-soon-robot" viewBox="0 0 120 140" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="30" y="40" width="60" height="50" rx="10" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <rect x="40" y="52" width="14" height="14" rx="4" fill="var(--highlight)"/>
-            <rect x="66" y="52" width="14" height="14" rx="4" fill="var(--highlight)"/>
-            <rect x="45" y="74" width="30" height="6" rx="3" fill="var(--border)"/>
-            <rect x="50" y="76" width="10" height="2" rx="1" fill="var(--text-dim)"/>
-            <rect x="63" y="76" width="10" height="2" rx="1" fill="var(--text-dim)"/>
-            <rect x="52" y="30" width="16" height="12" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <circle cx="60" cy="28" r="4" fill="var(--highlight)"/>
-            <rect x="10" y="55" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <rect x="92" y="55" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <rect x="40" y="90" width="12" height="30" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <rect x="68" y="90" width="12" height="30" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <rect x="36" y="116" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <rect x="66" y="116" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-          </svg>
+        <div class="coming-soon-content" id="slack-coming-soon">
           <div class="coming-soon-text">
             <h2>Slack Integration</h2>
             <p class="coming-soon-badge">Coming Soon</p>
@@ -334,23 +318,7 @@
     <!-- View: Notion -->
     <section id="view-notion" class="view-section" style="display:none">
       <div class="coming-soon-view">
-        <div class="coming-soon-content">
-          <svg class="coming-soon-robot" viewBox="0 0 120 140" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="30" y="40" width="60" height="50" rx="10" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <rect x="40" y="52" width="14" height="14" rx="4" fill="var(--highlight)"/>
-            <rect x="66" y="52" width="14" height="14" rx="4" fill="var(--highlight)"/>
-            <rect x="45" y="74" width="30" height="6" rx="3" fill="var(--border)"/>
-            <rect x="50" y="76" width="10" height="2" rx="1" fill="var(--text-dim)"/>
-            <rect x="63" y="76" width="10" height="2" rx="1" fill="var(--text-dim)"/>
-            <rect x="52" y="30" width="16" height="12" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <circle cx="60" cy="28" r="4" fill="var(--highlight)"/>
-            <rect x="10" y="55" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <rect x="92" y="55" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <rect x="40" y="90" width="12" height="30" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <rect x="68" y="90" width="12" height="30" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <rect x="36" y="116" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-            <rect x="66" y="116" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-          </svg>
+        <div class="coming-soon-content" id="notion-coming-soon">
           <div class="coming-soon-text">
             <h2>Notion Integration</h2>
             <p class="coming-soon-badge">Coming Soon</p>
@@ -526,6 +494,35 @@
       <div id="heatmap-detail-body" class="heatmap-detail-body"></div>
     </div>
   </div>
+
+  <!-- Robot SVG Template (reused across disconnected state, coming-soon, empty states) -->
+  <template id="robot-placeholder">
+    <svg class="coming-soon-robot" viewBox="0 0 120 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <!-- antenna -->
+      <rect x="52" y="30" width="16" height="12" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+      <circle cx="60" cy="28" r="4" fill="var(--highlight)"/>
+      <!-- head -->
+      <rect x="30" y="40" width="60" height="50" rx="10" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+      <!-- eyes -->
+      <rect x="40" y="52" width="14" height="14" rx="4" fill="var(--highlight)"/>
+      <rect x="66" y="52" width="14" height="14" rx="4" fill="var(--highlight)"/>
+      <!-- mouth (default: straight) -->
+      <g class="robot-mouth">
+        <rect x="45" y="74" width="30" height="6" rx="3" fill="var(--border)"/>
+        <rect x="50" y="76" width="10" height="2" rx="1" fill="var(--text-dim)"/>
+        <rect x="63" y="76" width="10" height="2" rx="1" fill="var(--text-dim)"/>
+      </g>
+      <!-- arms -->
+      <rect x="10" y="55" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+      <rect x="92" y="55" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+      <!-- legs -->
+      <rect x="40" y="90" width="12" height="30" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+      <rect x="68" y="90" width="12" height="30" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+      <!-- feet -->
+      <rect x="36" y="116" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+      <rect x="66" y="116" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
+    </svg>
+  </template>
 
   <!-- Toast -->
   <div id="toast" class="toast" style="display:none"></div>
