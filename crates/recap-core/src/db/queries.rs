@@ -151,6 +151,18 @@ pub fn get_sync_cursor(db: &Database, source: &Source) -> Option<String> {
     .ok()
 }
 
+/// Returns all sync cursors with their last sync times: (source, cursor, last_sync).
+pub fn get_all_sync_cursors(db: &Database) -> rusqlite::Result<Vec<(String, String, String)>> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT source, cursor, last_sync FROM sync_cursors ORDER BY source",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    rows.collect()
+}
+
 // ---------------------------------------------------------------------------
 // Trends queries
 // ---------------------------------------------------------------------------
