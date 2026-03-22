@@ -1089,6 +1089,7 @@ body {
 .kind-badge.kind-review { background: var(--status-review); }
 .kind-badge.kind-commit { background: var(--status-backlog); }
 .kind-badge.kind-issue { background: var(--linear); }
+.kind-badge.kind-closed { background: var(--status-closed); }
 .kind-badge.kind-comment { background: var(--linear); }
 .kind-badge.kind-message { background: var(--slack); }
 .kind-badge.kind-page { background: var(--status-backlog); }

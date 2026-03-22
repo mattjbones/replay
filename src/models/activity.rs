@@ -52,6 +52,7 @@ pub enum ActivityKind {
     PrMerged,
     PrReviewed,
     IssueOpened,
+    IssueClosed,
     // Slack
     MessageSent,
     ThreadReplied,

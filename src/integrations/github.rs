@@ -621,7 +621,7 @@ impl GitHubIntegration {
             // Use closed_at for closed issues, created_at for open ones
             let (kind, timestamp_str) = if state == "closed" {
                 let closed_at = item["closed_at"].as_str().unwrap_or_default();
-                (ActivityKind::IssueOpened, if closed_at.is_empty() {
+                (ActivityKind::IssueClosed, if closed_at.is_empty() {
                     item["updated_at"].as_str().unwrap_or_default()
                 } else {
                     closed_at
@@ -898,7 +898,7 @@ fn parse_issues_event(
 
     let kind = match action {
         "opened" => ActivityKind::IssueOpened,
-        "closed" => ActivityKind::IssueOpened, // still IssueOpened kind — state tracked in metadata
+        "closed" => ActivityKind::IssueClosed,
         _ => return None,
     };
 
