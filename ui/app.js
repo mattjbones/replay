@@ -534,6 +534,44 @@ function initKindColors() {
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+/**
+ * Clone the robot SVG from the <template id="robot-placeholder"> element.
+ * Pass variant="confused" to swap the default straight mouth for the
+ * squiggly confused-mouth + question marks used in disconnected states.
+ */
+function cloneRobotSvg(variant) {
+  const tpl = document.getElementById('robot-placeholder');
+  const svg = document.importNode(tpl.content, true).querySelector('svg');
+  if (variant === 'confused') {
+    // Replace the default straight mouth with a squiggly confused mouth
+    const mouth = svg.querySelector('.robot-mouth');
+    if (mouth) {
+      mouth.innerHTML = '';
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', 'M45 76 Q50 72 55 76 Q60 80 65 76 Q70 72 75 76');
+      path.setAttribute('stroke', 'var(--border)');
+      path.setAttribute('stroke-width', '2.5');
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke-linecap', 'round');
+      mouth.appendChild(path);
+    }
+    // Add question marks on either side
+    const q1 = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    q1.setAttribute('x', '22'); q1.setAttribute('y', '46');
+    q1.setAttribute('fill', 'var(--text-dim)');
+    q1.setAttribute('font-size', '16'); q1.setAttribute('font-weight', 'bold');
+    q1.textContent = '?';
+    const q2 = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    q2.setAttribute('x', '92'); q2.setAttribute('y', '46');
+    q2.setAttribute('fill', 'var(--text-dim)');
+    q2.setAttribute('font-size', '16'); q2.setAttribute('font-weight', 'bold');
+    q2.textContent = '?';
+    svg.appendChild(q1);
+    svg.appendChild(q2);
+  }
+  return svg;
+}
+
 let dom = {};
 
 // ===== Initialization =====
@@ -631,6 +669,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     slackMessageTbody: $("#slack-message-tbody"),
     slackMessageCount: $("#slack-message-count"),
   };
+
+  // Inject robot SVGs into "coming soon" placeholders from template
+  for (const id of ['slack-coming-soon', 'notion-coming-soon']) {
+    const el = document.getElementById(id);
+    if (el) el.prepend(cloneRobotSvg());
+  }
 
   initKindColors();
   renderDate();
@@ -845,35 +889,22 @@ function loadViewData(view) {
 }
 
 function renderNotConnectedPlaceholder(container, serviceName) {
-  container.innerHTML = `
-    <div class="coming-soon-view">
-      <div class="coming-soon-content">
-        <svg class="coming-soon-robot" viewBox="0 0 120 140" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="30" y="40" width="60" height="50" rx="10" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-          <rect x="40" y="52" width="14" height="14" rx="4" fill="var(--highlight)"/>
-          <rect x="66" y="52" width="14" height="14" rx="4" fill="var(--highlight)"/>
-          <!-- confused mouth (squiggly) -->
-          <path d="M45 76 Q50 72 55 76 Q60 80 65 76 Q70 72 75 76" stroke="var(--border)" stroke-width="2.5" fill="none" stroke-linecap="round"/>
-          <!-- question marks -->
-          <text x="22" y="46" fill="var(--text-dim)" font-size="16" font-weight="bold">?</text>
-          <text x="92" y="46" fill="var(--text-dim)" font-size="16" font-weight="bold">?</text>
-          <rect x="52" y="30" width="16" height="12" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-          <circle cx="60" cy="28" r="4" fill="var(--highlight)"/>
-          <rect x="10" y="55" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-          <rect x="92" y="55" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-          <rect x="40" y="90" width="12" height="30" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-          <rect x="68" y="90" width="12" height="30" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-          <rect x="36" y="116" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-          <rect x="66" y="116" width="18" height="8" rx="4" fill="var(--accent)" stroke="var(--border)" stroke-width="2"/>
-        </svg>
-        <div class="coming-soon-text">
-          <h2>${escapeHtml(serviceName)} Not Connected</h2>
-          <p class="coming-soon-badge" style="background:var(--highlight)">Not Connected</p>
-          <p class="coming-soon-desc">Connect ${escapeHtml(serviceName)} in Settings to see your activity here.</p>
-          <button class="btn" style="margin-top:12px" onclick="document.getElementById('action-settings').click()">Open Settings</button>
-        </div>
-      </div>
-    </div>`;
+  container.innerHTML = '';
+  const wrapper = document.createElement('div');
+  wrapper.className = 'coming-soon-view';
+  const content = document.createElement('div');
+  content.className = 'coming-soon-content';
+  content.appendChild(cloneRobotSvg('confused'));
+  const textDiv = document.createElement('div');
+  textDiv.className = 'coming-soon-text';
+  textDiv.innerHTML = `
+    <h2>${escapeHtml(serviceName)} Not Connected</h2>
+    <p class="coming-soon-badge" style="background:var(--highlight)">Not Connected</p>
+    <p class="coming-soon-desc">Connect ${escapeHtml(serviceName)} in Settings to see your activity here.</p>
+    <button class="btn" style="margin-top:12px" onclick="document.getElementById('action-settings').click()">Open Settings</button>`;
+  content.appendChild(textDiv);
+  wrapper.appendChild(content);
+  container.appendChild(wrapper);
 }
 
 function ensureDisconnectedOverlay(viewId, serviceName) {
