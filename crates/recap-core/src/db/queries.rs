@@ -352,6 +352,27 @@ pub fn get_all_activities(db: &Database) -> rusqlite::Result<Vec<Activity>> {
     rows.collect()
 }
 
+/// Full-text search across activity title and description columns using SQL LIKE.
+/// Returns up to 100 matching activities ordered by occurred_at DESC.
+pub fn search_activities(db: &Database, query: &str) -> rusqlite::Result<Vec<Activity>> {
+    let conn = db.conn.lock().map_err(|e| {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_LOCKED),
+            Some(format!("mutex poisoned: {e}")),
+        )
+    })?;
+    let pattern = format!("%{query}%");
+    let mut stmt = conn.prepare(
+        "SELECT id, source, source_id, kind, title, description, url, project, occurred_at, metadata, synced_at
+         FROM activities
+         WHERE title LIKE ?1 OR description LIKE ?1
+         ORDER BY occurred_at DESC
+         LIMIT 100",
+    )?;
+    let rows = stmt.query_map(params![pattern], row_to_activity)?;
+    rows.collect()
+}
+
 fn row_to_activity(row: &rusqlite::Row) -> rusqlite::Result<Activity> {
     let source_str: String = row.get(1)?;
     let kind_str: String = row.get(3)?;
