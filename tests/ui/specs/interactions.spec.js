@@ -31,7 +31,7 @@ test.describe("Standup modal", () => {
     await page.click("#action-standup");
 
     await expect(page.locator("#standup-overlay")).toBeVisible();
-    await expect(page.locator(".standup-modal h2")).toHaveText("Daily Standup");
+    await expect(page.locator(".standup-modal h2").first()).toHaveText("Daily Standup");
   });
 
   test("closes when clicking X", async ({ page }) => {
