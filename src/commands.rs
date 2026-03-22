@@ -191,6 +191,12 @@ pub async fn clear_cache(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn clear_llm_cache(state: State<'_, AppState>) -> Result<(), String> {
+    invalidate_all_summaries(&state.db);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn trigger_sync(state: State<'_, AppState>) -> Result<String, String> {
     let db = Arc::clone(&state.db);
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
@@ -230,7 +236,12 @@ pub async fn get_llm_summary(
 
     // Build a cache key from period + date range.
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
-    let cache_key = format!("summary:{}:{}", period, start.to_rfc3339());
+    let cache_key = format!(
+        "summary:{}:{}:{}",
+        config.llm.profile,
+        period,
+        start.to_rfc3339()
+    );
     let ttl = config.ttl.warm_minutes;
 
     // Check cache first.
@@ -383,7 +394,7 @@ pub async fn get_standup(
     let today_end = today_start + chrono::Duration::days(1);
 
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
-    let cache_key = format!("standup:v2:{}", base_date);
+    let cache_key = format!("standup:v3:{}:{}", config.llm.profile, base_date);
     let ttl = config.ttl.warm_minutes;
     if let Some(cached) = get_cached_summary(&state.db, &cache_key, ttl) {
         return Ok(Some(cached));
@@ -433,12 +444,27 @@ pub async fn get_standup(
         .collect::<Vec<_>>()
         .join("\n");
 
+    let profile_instructions = match config.llm.profile {
+        crate::config::LlmProfile::Work => {
+            "Generate a concise daily standup update in markdown with two sections:\n\
+             ## What I Did\n(based on today's activities — what was shipped, reviewed, or completed)\n\
+             ## What I'm Working On\n(based on my open PRs and high-priority Linear tickets)\n\n\
+             Keep each section to 3-5 bullet points. Be specific with ticket/PR numbers.\n\
+             If there's nothing for a section, omit it."
+        }
+        crate::config::LlmProfile::Personal => {
+            "Generate a concise personal dev recap in markdown with two sections:\n\
+             ## What I Did\n(meaningful progress and completed work)\n\
+             ## Next Focus\n(what I plan to continue next)\n\n\
+             Keep each section to 3-5 bullet points. Use practical, encouraging language.\n\
+             Include one short effort note (time/focus/scope) only if the data supports it.\n\
+             Avoid corporate standup tone and avoid burnout/velocity framing.\n\
+             If there's nothing for a section, omit it."
+        }
+    };
+
     let prompt = format!(
-        "Generate a concise daily standup update in markdown with two sections:\n\
-         ## What I Did\n(based on today's activities — what was shipped, reviewed, or completed)\n\
-         ## What I'm Working On\n(based on my open PRs and high-priority Linear tickets)\n\n\
-         Keep each section to 3-5 bullet points. Be specific with ticket/PR numbers.\n\
-         If there's nothing for a section, omit it.\n\n\
+        "{profile_instructions}\n\n\
          Today's activities:\n{activities}\n\n\
          My open/draft PRs:\n{prs}\n\n\
          My urgent/high-priority Linear tickets:\n{tickets}",
@@ -483,7 +509,22 @@ pub async fn get_trends_ai_summary(
     prompt: String,
 ) -> Result<Option<String>, String> {
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
-    match crate::llm::generate_from_prompt(&config.llm, &prompt).await {
+    let prompt_with_profile = match config.llm.profile {
+        crate::config::LlmProfile::Work => {
+            format!(
+                "Context: this is work activity. Prioritize delivery trends, collaboration patterns, and risk signals.\n\n{}",
+                prompt
+            )
+        }
+        crate::config::LlmProfile::Personal => {
+            format!(
+                "Context: this is personal development activity. Prioritize momentum, learning, consistency, and craft.\n\
+                 De-emphasize corporate productivity framing (velocity/burnout) and include a brief effort note only if evidence is present.\n\n{}",
+                prompt
+            )
+        }
+    };
+    match crate::llm::generate_from_prompt(&config.llm, &prompt_with_profile).await {
         Ok(summary) => Ok(Some(summary)),
         Err(_) => Ok(None),
     }

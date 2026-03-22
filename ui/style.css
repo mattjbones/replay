@@ -1731,6 +1731,12 @@ body {
   gap: 16px;
 }
 
+.trends-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin: 8px 0 12px;
+}
+
 .heatmap-container {
   padding: 8px 0;
 }
