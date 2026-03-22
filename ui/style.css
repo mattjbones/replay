@@ -2206,6 +2206,44 @@ body {
   color: var(--text-dim);
 }
 
+.update-error-detail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--highlight) 6%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--highlight) 20%, var(--border));
+}
+
+.update-error-text {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== Update Banner Error Variant ===== */
+.update-banner--error {
+  background: color-mix(in srgb, var(--highlight) 6%, var(--bg));
+  border-bottom-color: color-mix(in srgb, var(--highlight) 20%, var(--border));
+}
+
+.update-banner--error .update-banner-dot {
+  background: var(--highlight);
+  box-shadow: 0 0 6px var(--highlight);
+}
+
+.update-banner--error .update-banner-text {
+  color: var(--text-dim);
+  font-weight: 400;
+  font-size: 12px;
+}
+
 /* ===== Nav tab active colours for new tabs ===== */
 .nav-tab.active[data-view="slack"]  { border-bottom-color: var(--slack); }
 .nav-tab.active[data-view="notion"] { border-bottom-color: var(--notion); }
