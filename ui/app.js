@@ -1516,22 +1516,12 @@ function renderGitHubView(activities) {
       ];
   dom.githubStats.innerHTML = renderStatCards(statCards);
 
-  // Reorder cards: trunk puts commits first, PR-based puts PRs first
-  const sourceView = document.querySelector('#view-github .source-view');
-  if (sourceView) {
-    const cards = [...sourceView.querySelectorAll(':scope > .card')];
-    // Cards are: [stats-row, PR table, Commits table, Reviews table, Issues table, Open PRs]
-    // Find cards by their header label
-    const findCard = (label) => cards.find(c => c.querySelector('.card-label')?.textContent?.trim() === label);
-    const prCard = findCard('Pull Requests');
-    const commitCard = findCard('Commits');
-    if (isTrunk && commitCard && prCard) {
-      // Move commits card before PRs card
-      sourceView.insertBefore(commitCard, prCard);
-    } else if (!isTrunk && prCard && commitCard) {
-      // Ensure PRs card is before commits card
-      sourceView.insertBefore(prCard, commitCard);
-    }
+  // Set card order via CSS: trunk puts commits first, PR-based puts PRs first
+  const prCard = document.getElementById('github-card-prs');
+  const commitCard = document.getElementById('github-card-commits');
+  if (prCard && commitCard) {
+    prCard.style.order = isTrunk ? 2 : 1;
+    commitCard.style.order = isTrunk ? 1 : 2;
   }
 
   // Status + CC combined filter bar
