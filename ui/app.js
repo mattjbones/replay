@@ -369,6 +369,88 @@ function resetGridLayout() {
   showToast("Layout reset to defaults", "success");
 }
 
+// ===== Collapsible Card Sections =====
+
+const COLLAPSED_CARDS_KEY = 'recap_collapsed_cards';
+
+function getCollapsedCards() {
+  try {
+    const stored = localStorage.getItem(COLLAPSED_CARDS_KEY);
+    return stored ? JSON.parse(stored) : {};
+  } catch {
+    return {};
+  }
+}
+
+function setCardCollapsed(cardId, collapsed) {
+  const collapsedCards = getCollapsedCards();
+  if (collapsed) {
+    collapsedCards[cardId] = true;
+  } else {
+    delete collapsedCards[cardId];
+  }
+  try {
+    localStorage.setItem(COLLAPSED_CARDS_KEY, JSON.stringify(collapsedCards));
+  } catch {}
+}
+
+function toggleCardCollapse(card) {
+  const cardId = card.dataset.cardId;
+  if (!cardId) return;
+  const isCollapsed = card.classList.toggle('collapsed');
+  setCardCollapsed(cardId, isCollapsed);
+}
+
+/**
+ * Initializes collapsible behavior on all cards with data-card-id.
+ * Wraps non-header children in a .card-collapsible-content div and
+ * restores persisted collapsed state from localStorage.
+ */
+function initCollapsibleCards() {
+  const collapsedState = getCollapsedCards();
+  const cards = document.querySelectorAll('.card[data-card-id]');
+
+  cards.forEach(card => {
+    const cardId = card.dataset.cardId;
+
+    // Avoid re-initializing if already wrapped
+    if (card.querySelector('.card-collapsible-content')) return;
+
+    // Collect all children after the card-header into a wrapper
+    const header = card.querySelector('.card-header');
+    if (!header) return;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'card-collapsible-content';
+
+    // Move all siblings after header into the wrapper
+    const children = [...card.children];
+    let afterHeader = false;
+    for (const child of children) {
+      if (child === header) {
+        afterHeader = true;
+        continue;
+      }
+      if (afterHeader) {
+        wrapper.appendChild(child);
+      }
+    }
+    card.appendChild(wrapper);
+
+    // Restore collapsed state
+    if (collapsedState[cardId]) {
+      card.classList.add('collapsed');
+    }
+
+    // Click on the header toggles collapse
+    header.addEventListener('click', (e) => {
+      // Don't toggle if clicking a link, button (other than the toggle), or input inside header
+      if (e.target.closest('a, input, select')) return;
+      toggleCardCollapse(card);
+    });
+  });
+}
+
 // ===== Constants =====
 
 const SOURCE_META = {
@@ -553,6 +635,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   initKindColors();
   renderDate();
   bindEvents();
+  initCollapsibleCards();
   await refreshAuthStatus();
   // Load config first so grid layout can read it
   try {

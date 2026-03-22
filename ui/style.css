@@ -636,6 +636,65 @@ body {
   color: var(--text-dim);
 }
 
+/* ===== Collapsible Card Sections ===== */
+
+.card-header-collapsible {
+  cursor: pointer;
+  user-select: none;
+}
+
+.card-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-collapse-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+  flex-shrink: 0;
+}
+
+.card-collapse-toggle:hover {
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.collapse-chevron {
+  transition: transform 0.2s ease;
+  transform: rotate(90deg);
+}
+
+.card.collapsed .collapse-chevron {
+  transform: rotate(0deg);
+}
+
+.card-collapsible-content {
+  overflow: hidden;
+  transition: max-height 0.25s ease, opacity 0.2s ease;
+  max-height: 2000px;
+  opacity: 1;
+}
+
+.card.collapsed .card-collapsible-content {
+  max-height: 0;
+  opacity: 0;
+}
+
+.card.collapsed .card-header-collapsible {
+  margin-bottom: 0;
+}
+
 /* Full width card spans all columns (fallback) */
 .card-full-width {
   grid-column: 1 / -1;
