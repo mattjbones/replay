@@ -1,4 +1,4 @@
-use crate::config::LlmConfig;
+use crate::config::{LlmConfig, LlmProfile};
 use crate::models::{Activity, Digest, Period};
 
 /// Build the period label for the prompt.
@@ -21,6 +21,17 @@ fn format_activity(a: &Activity) -> String {
     format!("[{}] {}: {}{} - {}", a.source, a.kind, a.title, project, time)
 }
 
+fn profile_summary_instructions(profile: &LlmProfile) -> &'static str {
+    match profile {
+        LlmProfile::Work => {
+            "You are summarizing my work activity. Be concise and highlight what matters: shipped work, key decisions, and collaboration patterns. Group by theme, not by tool. Include blockers/risks only if they are explicit in the data. Skip noise."
+        }
+        LlmProfile::Personal => {
+            "You are summarizing my personal developer activity. Focus on momentum, learning, craft, and consistency. Avoid corporate productivity framing. Mention effort signals (time invested, sustained focus, or scope progressed) without using burnout/velocity language."
+        }
+    }
+}
+
 /// Generate a summary using the `claude` CLI (--print mode).
 /// Falls back to the Anthropic API if `claude` CLI is not available.
 pub async fn generate_summary(
@@ -38,11 +49,11 @@ pub async fn generate_summary(
     }
 
     let prompt = format!(
-        "You are summarizing my work activity for {label}. \
-         Be concise and highlight what matters: shipped work, key decisions, \
-         and collaboration patterns. Group by theme, not by tool. Skip noise. \
+        "{} For {label}. \
          Use markdown formatting. Keep it under 300 words.\n\n\
          Activities:\n{formatted_activities}"
+        ,
+        profile_summary_instructions(&_config.profile),
     );
 
     // Try `claude --print` first (uses existing Claude Code auth, no API key needed)
