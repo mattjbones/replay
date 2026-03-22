@@ -1562,6 +1562,8 @@ body {
   white-space: nowrap;
 }
 
+.cc-tag.gh-label { text-transform: none; }
+
 .cc-feat { background: color-mix(in srgb, var(--status-completed) 20%, transparent); color: var(--status-completed); }
 .cc-fix { background: color-mix(in srgb, var(--status-closed) 20%, transparent); color: var(--status-closed); }
 .cc-perf { background: color-mix(in srgb, var(--status-review) 20%, transparent); color: var(--status-review); }

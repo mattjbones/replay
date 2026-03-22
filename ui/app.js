@@ -1493,7 +1493,11 @@ async function fetchGitHubIssues() {
     }
     dom.githubIssueTbody.innerHTML = issues.map(issue => {
       const labelsHtml = issue.labels.length
-        ? issue.labels.map(l => `<span class="cc-tag">${escapeHtml(l)}</span>`).join(' ')
+        ? issue.labels.map(l => {
+            const bg = `#${l.color}`;
+            const textColor = labelContrastColor(l.color);
+            return `<span class="cc-tag gh-label" style="background:${bg};color:${textColor}">${escapeHtml(l.name)}</span>`;
+          }).join(' ')
         : '';
       return `<tr>
         <td><span class="kind-badge kind-open">Open</span> ${labelsHtml}</td>
@@ -2781,6 +2785,17 @@ function renderBurnoutChart(burnout) {
 }
 
 // ===== Utilities =====
+
+/** Return '#fff' or '#000' depending on background luminance for readable contrast. */
+function labelContrastColor(hexColor) {
+  const hex = hexColor.replace(/^#/, '');
+  const r = parseInt(hex.substring(0, 2), 16);
+  const g = parseInt(hex.substring(2, 4), 16);
+  const b = parseInt(hex.substring(4, 6), 16);
+  // W3C relative luminance formula
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.5 ? '#000' : '#fff';
+}
 
 function escapeHtml(str) {
   if (!str) return "";
