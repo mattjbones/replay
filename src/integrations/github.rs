@@ -618,10 +618,23 @@ impl GitHubIntegration {
             let repo_url = item["repository_url"].as_str().unwrap_or_default();
             let repo_name = repo_name_from_url(repo_url);
 
-            // Use closed_at for closed issues, created_at for open ones
+            // Use closed_at for closed issues, created_at for open ones.
+            // Distinguish IssueCompleted (closed with a linked PR) from IssueClosed
+            // (closed without one). GitHub's `state_reason` field is "completed"
+            // when the issue was resolved (e.g. via a PR merge) and "not_planned"
+            // otherwise. We also treat the presence of `pull_request` on the
+            // item as a PR-linked closure signal.
             let (kind, timestamp_str) = if state == "closed" {
                 let closed_at = item["closed_at"].as_str().unwrap_or_default();
-                (ActivityKind::IssueClosed, if closed_at.is_empty() {
+                let state_reason = item["state_reason"].as_str().unwrap_or("");
+                let has_linked_pr = item.get("pull_request").is_some()
+                    || state_reason == "completed";
+                let closed_kind = if has_linked_pr {
+                    ActivityKind::IssueCompleted
+                } else {
+                    ActivityKind::IssueClosed
+                };
+                (closed_kind, if closed_at.is_empty() {
                     item["updated_at"].as_str().unwrap_or_default()
                 } else {
                     closed_at
@@ -896,13 +909,29 @@ fn parse_issues_event(
         .and_then(|a| a.as_str())
         .unwrap_or("");
 
+    let issue = payload.get("issue")?;
+
+    // For closed issues, check whether the closure was linked to a PR.
+    // GitHub Events API includes `state_reason` on the issue object
+    // ("completed" when resolved via PR, "not_planned" otherwise).
+    // We also check the issue's `pull_request` field as a fallback signal.
     let kind = match action {
         "opened" => ActivityKind::IssueOpened,
-        "closed" => ActivityKind::IssueClosed,
+        "closed" => {
+            let state_reason = issue
+                .get("state_reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let has_linked_pr = issue.get("pull_request").is_some()
+                || state_reason == "completed";
+            if has_linked_pr {
+                ActivityKind::IssueCompleted
+            } else {
+                ActivityKind::IssueClosed
+            }
+        }
         _ => return None,
     };
-
-    let issue = payload.get("issue")?;
     let number = issue.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
     let title = issue
         .get("title")
