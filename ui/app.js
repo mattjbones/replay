@@ -2137,23 +2137,6 @@ function renderSettingsPrefs() {
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
       <div class="pref-section-divider">Debug</div>
       <button class="btn" id="debug-show-activities-btn">Show All Activities</button>
-      <div id="debug-activities-panel" style="display:none;margin-top:12px">
-        <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-          <input class="pref-input" type="text" id="debug-filter" placeholder="Filter by title, source, kind, project..." style="flex:1;min-width:200px">
-          <select class="pref-input" id="debug-source-filter" style="width:auto">
-            <option value="">All sources</option>
-            <option value="github">GitHub</option>
-            <option value="linear">Linear</option>
-            <option value="slack">Slack</option>
-            <option value="notion">Notion</option>
-          </select>
-          <select class="pref-input" id="debug-kind-filter" style="width:auto">
-            <option value="">All kinds</option>
-          </select>
-          <span id="debug-count" style="font-size:11px;color:var(--text-dim);align-self:center"></span>
-        </div>
-        <div id="debug-activities-table" style="max-height:70vh;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)"></div>
-      </div>
     </div>
   `;
   document.getElementById('pref-save-btn')?.addEventListener('click', savePreferences);
@@ -2185,23 +2168,56 @@ function renderSettingsPrefs() {
     });
   }
 
-  // Debug: show all activities
+  // Debug: show all activities in a slide-out drawer
   const debugBtn = document.getElementById('debug-show-activities-btn');
   if (debugBtn) {
     debugBtn.addEventListener('click', async () => {
-      const panel = document.getElementById('debug-activities-panel');
-      if (panel.style.display !== 'none') {
-        panel.style.display = 'none';
-        debugBtn.textContent = 'Show All Activities';
-        return;
-      }
+      // If drawer already open, close it
+      const existing = document.getElementById('debug-drawer-overlay');
+      if (existing) { existing.remove(); return; }
+
       debugBtn.textContent = 'Loading...';
       debugBtn.disabled = true;
       try {
         const activities = await invoke('get_all_activities');
         state._debugActivities = activities;
-        panel.style.display = '';
-        debugBtn.textContent = 'Hide Activities';
+
+        // Build drawer overlay
+        const overlay = document.createElement('div');
+        overlay.id = 'debug-drawer-overlay';
+        overlay.className = 'debug-drawer-overlay';
+        overlay.innerHTML = `
+          <div class="debug-drawer">
+            <div class="debug-drawer-header">
+              <h2>All Activities</h2>
+              <button class="btn btn-icon" id="debug-drawer-close">&times;</button>
+            </div>
+            <div class="debug-drawer-filters">
+              <input class="pref-input" type="text" id="debug-filter" placeholder="Filter by title, source, kind, project..." style="flex:1;min-width:200px">
+              <select class="pref-input" id="debug-source-filter" style="width:auto">
+                <option value="">All sources</option>
+                <option value="github">GitHub</option>
+                <option value="linear">Linear</option>
+                <option value="slack">Slack</option>
+                <option value="notion">Notion</option>
+              </select>
+              <select class="pref-input" id="debug-kind-filter" style="width:auto">
+                <option value="">All kinds</option>
+              </select>
+              <span id="debug-count" style="font-size:11px;color:var(--text-dim);align-self:center"></span>
+            </div>
+            <div class="debug-drawer-body" id="debug-activities-table"></div>
+          </div>`;
+        document.body.appendChild(overlay);
+
+        // Close drawer on overlay click or close button
+        const closeDrawer = () => { overlay.remove(); };
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) closeDrawer(); });
+        document.getElementById('debug-drawer-close')?.addEventListener('click', closeDrawer);
+
+        // Close on Escape key
+        const onKey = (e) => { if (e.key === 'Escape') { closeDrawer(); document.removeEventListener('keydown', onKey); } };
+        document.addEventListener('keydown', onKey);
 
         // Populate kind filter with unique kinds
         const kindFilter = document.getElementById('debug-kind-filter');
@@ -2217,8 +2233,8 @@ function renderSettingsPrefs() {
         document.getElementById('debug-kind-filter')?.addEventListener('change', renderDebugActivities);
       } catch (err) {
         showToast(`Failed to load activities: ${err}`, 'error');
-        debugBtn.textContent = 'Show All Activities';
       } finally {
+        debugBtn.textContent = 'Show All Activities';
         debugBtn.disabled = false;
       }
     });

@@ -1013,7 +1013,7 @@ body {
 
 /* ===== Activity Table ===== */
 .activity-table-wrapper {
-  max-height: 400px;
+  max-height: 60vh;
   overflow-y: auto;
 }
 
@@ -2252,6 +2252,68 @@ body {
   width: 14px;
   height: 14px;
   cursor: pointer;
+}
+
+/* ===== Debug Drawer ===== */
+.debug-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: var(--overlay);
+  backdrop-filter: blur(4px);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.debug-drawer {
+  width: min(900px, 92vw);
+  height: 100vh;
+  background: var(--card);
+  border-left: 1px solid var(--border);
+  box-shadow: -4px 0 24px var(--shadow-heavy);
+  display: flex;
+  flex-direction: column;
+  animation: slideInRight 0.2s ease-out;
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+.debug-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.debug-drawer-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.debug-drawer-filters {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px;
+  flex-wrap: wrap;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.debug-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.debug-drawer-body .activity-table {
+  font-size: 12px;
 }
 
 /* ===== Utility ===== */
