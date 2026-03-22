@@ -191,6 +191,12 @@ pub async fn clear_cache(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn clear_llm_cache(state: State<'_, AppState>) -> Result<(), String> {
+    invalidate_all_summaries(&state.db);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn trigger_sync(state: State<'_, AppState>) -> Result<String, String> {
     let db = Arc::clone(&state.db);
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();

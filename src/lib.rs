@@ -81,6 +81,7 @@ pub fn run() {
             commands::exchange_slack_refresh_token,
             commands::get_all_activities,
             commands::clear_cache,
+            commands::clear_llm_cache,
             commands::trigger_sync,
             commands::get_config,
             commands::update_config,

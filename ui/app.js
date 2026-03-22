@@ -109,6 +109,7 @@ const state = {
   gridEditMode: false,
   lastSyncTime: null,
   updateBannerDismissed: false,
+  trendsAdvanced: false,
 };
 
 // ===== Grid Layout System =====
@@ -656,10 +657,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     heatmapContainer: $("#heatmap-container"),
     chartFocus: $("#chart-focus"),
     chartBurnout: $("#chart-burnout"),
+    trendsAdvancedToggle: $("#trends-advanced-toggle"),
 
     // Standup modal
     standupOverlay: $("#standup-overlay"),
     standupClose: $("#standup-close"),
+    standupTitle: $("#standup-title"),
     standupModalContent: $("#standup-modal-content"),
     standupCopy: $("#standup-copy"),
 
@@ -716,6 +719,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     state.config = await invoke('get_config');
   } catch {}
+  updateProfileModeUI();
   await loadDashboard();
 
   // Check for updates after UI is loaded
@@ -794,7 +798,7 @@ function bindEvents() {
 
   // Briefing refresh
   dom.briefingRefresh.addEventListener("click", () => {
-    const key = cacheKey();
+    const key = briefingCacheKey();
     delete state.llmCache[key];
     fetchBriefing();
   });
@@ -870,6 +874,67 @@ function bindEvents() {
       }
     }
   });
+
+  dom.trendsAdvancedToggle?.addEventListener("click", () => {
+    state.trendsAdvanced = !state.trendsAdvanced;
+    applyTrendsProfileMode();
+  });
+}
+
+function isPersonalProfile() {
+  return (state.config?.llm?.profile || "work") === "personal";
+}
+
+function setHidden(el, hidden) {
+  if (!el) return;
+  el.classList.toggle("hidden", !!hidden);
+}
+
+function applyOverviewProfileMode() {
+  const personal = isPersonalProfile();
+  setHidden(document.getElementById("card-pr-stats"), personal);
+  setHidden(document.getElementById("card-linear"), personal);
+}
+
+function applyTrendsProfileMode() {
+  const personal = isPersonalProfile();
+  const toggle = dom.trendsAdvancedToggle;
+  if (!toggle) return;
+
+  const advancedTargets = [
+    dom.anomalyAlerts,
+    dom.chartForecast?.closest(".card"),
+    dom.chartVelocity?.closest(".card"),
+    dom.chartCycleTime?.closest(".card"),
+    document.getElementById("cluster-container")?.closest(".card"),
+    document.getElementById("project-prediction-container")?.closest(".card"),
+    dom.chartFocus?.closest(".card"),
+    dom.chartBurnout?.closest(".card"),
+  ];
+
+  if (!personal) {
+    toggle.classList.add("hidden");
+    advancedTargets.forEach((el) => setHidden(el, false));
+    return;
+  }
+
+  toggle.classList.remove("hidden");
+  toggle.innerHTML = state.trendsAdvanced ? "Advanced &#9652;" : "Advanced &#9662;";
+  advancedTargets.forEach((el) => setHidden(el, !state.trendsAdvanced));
+}
+
+function updateProfileModeUI() {
+  const personal = isPersonalProfile();
+  if (dom.actionStandup) {
+    dom.actionStandup.innerHTML = personal
+      ? "&#x1f4dd; Generate Recap"
+      : "&#x1f4cb; Generate Standup";
+  }
+  if (dom.standupTitle) {
+    dom.standupTitle.textContent = personal ? "Personal Recap" : "Daily Standup";
+  }
+  applyOverviewProfileMode();
+  applyTrendsProfileMode();
 }
 
 // ===== View Switching =====
@@ -1064,6 +1129,18 @@ function cacheKey() {
   return `${state.period}:${state.date || "now"}`;
 }
 
+function llmProfileKey() {
+  return state.config?.llm?.profile || "work";
+}
+
+function briefingCacheKey() {
+  return `${llmProfileKey()}:${cacheKey()}`;
+}
+
+function standupCacheKey() {
+  return `${llmProfileKey()}:${cacheKey()}`;
+}
+
 function invokeArgs() {
   const args = { period: state.period };
   if (state.date) args.date = state.date;
@@ -1092,6 +1169,7 @@ async function loadDashboard() {
       dom.emptyState.style.display = "";
       dom.dashboard.style.display = "none";
       if (hlEl) hlEl.style.display = "none";
+      applyOverviewProfileMode();
       return;
     }
 
@@ -1104,6 +1182,7 @@ async function loadDashboard() {
     renderFeatures(features);
     renderLinearProgress(digest.activities);
     renderActivityTable(digest.activities);
+    applyOverviewProfileMode();
 
     // Initialize 12-column grid layout
     initGridSystem();
@@ -1123,10 +1202,13 @@ function renderHeadlineMetrics(digest) {
   const stats = digest?.stats;
   if (!stats) return;
 
+  const personal = isPersonalProfile();
   const total = stats.total_activities || 0;
   const merged = stats.by_kind?.["pr_merged"] || 0;
   const reviewed = stats.by_kind?.["pr_reviewed"] || 0;
   const issuesCompleted = stats.by_kind?.["issue_completed"] || 0;
+  const commits = stats.by_kind?.["commit_pushed"] || 0;
+  const issuesClosed = stats.by_kind?.["issue_closed"] || 0;
 
   const set = (id, value) => {
     const el = document.querySelector(`#${id} .headline-value`);
@@ -1134,9 +1216,18 @@ function renderHeadlineMetrics(digest) {
   };
 
   set("hl-total", total);
-  set("hl-prs", merged);
-  set("hl-reviews", reviewed);
-  set("hl-issues", issuesCompleted);
+  set("hl-prs", personal ? commits : merged);
+  set("hl-reviews", personal ? (merged + reviewed) : reviewed);
+  set("hl-issues", personal ? (issuesCompleted + issuesClosed) : issuesCompleted);
+
+  const setLabel = (id, value) => {
+    const el = document.querySelector(`#${id} .headline-label`);
+    if (el) el.textContent = value;
+  };
+  setLabel("hl-total", personal ? "Activity Signals" : "Total Activities");
+  setLabel("hl-prs", personal ? "Commits" : "PRs Merged");
+  setLabel("hl-reviews", personal ? "PR Activity" : "Reviews");
+  setLabel("hl-issues", personal ? "Issues Closed" : "Issues Completed");
 }
 
 // ===== Activity Over Time Chart =====
@@ -1842,7 +1933,7 @@ function renderStatCards(stats) {
 // ===== Daily Briefing (LLM) =====
 
 async function fetchBriefing() {
-  const key = cacheKey();
+  const key = briefingCacheKey();
 
   if (state.llmCache[key] !== undefined) {
     renderBriefing(state.llmCache[key]);
@@ -1875,7 +1966,8 @@ function renderBriefing(summary) {
 
 async function openStandupModal() {
   dom.standupOverlay.style.display = '';
-  const key = cacheKey();
+  const key = standupCacheKey();
+  const personal = isPersonalProfile();
   if (state.standupCache[key]) {
     state.standupText = state.standupCache[key];
     dom.standupModalContent.innerHTML = renderMarkdown(state.standupText);
@@ -1888,7 +1980,9 @@ async function openStandupModal() {
     const standup = await invoke('get_standup', args);
     state.standupCache[key] = standup;
     state.standupText = standup;
-    dom.standupModalContent.innerHTML = standup ? renderMarkdown(standup) : '<span class="briefing-disabled">Could not generate standup. Is Claude CLI installed?</span>';
+    dom.standupModalContent.innerHTML = standup
+      ? renderMarkdown(standup)
+      : `<span class="briefing-disabled">Could not generate ${personal ? "recap" : "standup"}. Is Claude CLI installed?</span>`;
   } catch (err) {
     dom.standupModalContent.innerHTML = `<span class="briefing-disabled">Error: ${escapeHtml(String(err))}</span>`;
   }
@@ -1905,6 +1999,7 @@ async function openSettingsModal() {
   try {
     state.config = await invoke('get_config');
   } catch {}
+  updateProfileModeUI();
   await refreshAuthStatus();
   renderUpdateStatus();
   renderSettingsConnections();
@@ -2076,12 +2171,35 @@ function renderSettingsPrefs() {
   if (!state.config) { dom.settingsPrefs.innerHTML = ''; return; }
   const c = state.config;
   const llm = c.llm || {};
+  const personalProfile = (llm.profile || "work") === "personal";
   const wh = c.working_hours || {};
   const workingDays = wh.working_days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
   const allDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const dayCheckboxes = allDays.map(d =>
     `<label class="pref-day-label"><input type="checkbox" class="pref-day-cb" value="${d}"${workingDays.includes(d) ? ' checked' : ''}> ${d}</label>`
   ).join('');
+  const workingHoursSection = personalProfile
+    ? `<div class="pref-row">
+         <div class="pref-hint">Working-hours settings are hidden in Personal mode. Switch to Work profile to configure burnout/working-hours analysis.</div>
+       </div>`
+    : `<div class="pref-section-divider">Working Hours</div>
+       <div class="pref-row">
+         <label class="pref-label">Work start</label>
+         <input class="pref-input pref-input-time" type="time" id="pref-work-start" value="${escapeAttr(wh.work_start || '09:00')}">
+       </div>
+       <div class="pref-row">
+         <label class="pref-label">Work end</label>
+         <input class="pref-input pref-input-time" type="time" id="pref-work-end" value="${escapeAttr(wh.work_end || '17:00')}">
+       </div>
+       <div class="pref-row pref-row-days">
+         <label class="pref-label">Working days</label>
+         <div class="pref-days">${dayCheckboxes}</div>
+       </div>
+       <div class="pref-row">
+         <label class="pref-label">Timezone</label>
+         <input class="pref-input" type="text" id="pref-timezone" value="${escapeAttr(wh.timezone || 'UTC')}" placeholder="UTC, Europe/London, America/New_York…">
+         <div class="pref-hint">IANA timezone name</div>
+       </div>`;
   dom.settingsPrefs.innerHTML = `
     <div class="pref-row">
       <label class="pref-label">Sync interval (min)</label>
@@ -2120,24 +2238,7 @@ function renderSettingsPrefs() {
       <input class="pref-input" type="text" id="pref-ignored-channels" value="${escapeAttr((c.slack?.ignored_channels || []).join(', '))}" placeholder="github-prs, graphite-*">
       <div class="pref-hint">Comma-separated, supports glob patterns</div>
     </div>
-    <div class="pref-section-divider">Working Hours</div>
-    <div class="pref-row">
-      <label class="pref-label">Work start</label>
-      <input class="pref-input pref-input-time" type="time" id="pref-work-start" value="${escapeAttr(wh.work_start || '09:00')}">
-    </div>
-    <div class="pref-row">
-      <label class="pref-label">Work end</label>
-      <input class="pref-input pref-input-time" type="time" id="pref-work-end" value="${escapeAttr(wh.work_end || '17:00')}">
-    </div>
-    <div class="pref-row pref-row-days">
-      <label class="pref-label">Working days</label>
-      <div class="pref-days">${dayCheckboxes}</div>
-    </div>
-    <div class="pref-row">
-      <label class="pref-label">Timezone</label>
-      <input class="pref-input" type="text" id="pref-timezone" value="${escapeAttr(wh.timezone || 'UTC')}" placeholder="UTC, Europe/London, America/New_York…">
-      <div class="pref-hint">IANA timezone name</div>
-    </div>
+    ${workingHoursSection}
     <div class="pref-save-row">
       <button class="btn" id="pref-save-btn">Save Preferences</button>
     </div>
@@ -2320,6 +2421,7 @@ function renderDebugPage() {
 
 async function savePreferences() {
   if (!state.config) return;
+  const previousProfile = state.config.llm?.profile || "work";
   state.config.schedule.sync_interval_minutes = parseInt(document.getElementById('pref-sync-interval')?.value) || 5;
   state.config.schedule.daily_reminder_time = document.getElementById('pref-reminder-time')?.value || '17:00';
   const ghUsername = document.getElementById('pref-gh-username')?.value?.trim();
@@ -2327,19 +2429,40 @@ async function savePreferences() {
   state.config.github.workflow = document.getElementById('pref-gh-workflow')?.value || 'pr';
   if (!state.config.llm) state.config.llm = {};
   state.config.llm.profile = document.getElementById('pref-llm-profile')?.value || 'work';
+  const profileChanged = previousProfile !== state.config.llm.profile;
   const slackUserId = document.getElementById('pref-slack-userid')?.value?.trim();
   state.config.slack.user_id = slackUserId || null;
   const ignoredStr = document.getElementById('pref-ignored-channels')?.value || '';
   state.config.slack.ignored_channels = ignoredStr.split(',').map(s => s.trim()).filter(Boolean);
   // Working hours
   if (!state.config.working_hours) state.config.working_hours = {};
-  state.config.working_hours.work_start = document.getElementById('pref-work-start')?.value || '09:00';
-  state.config.working_hours.work_end = document.getElementById('pref-work-end')?.value || '17:00';
-  state.config.working_hours.timezone = document.getElementById('pref-timezone')?.value?.trim() || 'UTC';
-  const checkedDays = [...document.querySelectorAll('.pref-day-cb:checked')].map(cb => cb.value);
-  state.config.working_hours.working_days = checkedDays;
+  const workStartEl = document.getElementById('pref-work-start');
+  const workEndEl = document.getElementById('pref-work-end');
+  const timezoneEl = document.getElementById('pref-timezone');
+  if (workStartEl && workEndEl && timezoneEl) {
+    state.config.working_hours.work_start = workStartEl.value || '09:00';
+    state.config.working_hours.work_end = workEndEl.value || '17:00';
+    state.config.working_hours.timezone = timezoneEl.value?.trim() || 'UTC';
+    const checkedDays = [...document.querySelectorAll('.pref-day-cb:checked')].map(cb => cb.value);
+    state.config.working_hours.working_days = checkedDays;
+  }
   try {
     await invoke('update_config', { config: state.config });
+    if (profileChanged) {
+      await invoke('clear_llm_cache');
+      state.llmCache = {};
+      state.standupCache = {};
+      state.briefingText = null;
+      state.standupText = null;
+      state.trendsAdvanced = false;
+      updateProfileModeUI();
+      await loadDashboard();
+      if (state.activeView === 'trends') {
+        await loadTrendsView();
+      }
+    } else {
+      updateProfileModeUI();
+    }
     showToast('Preferences saved!', 'success');
   } catch (err) {
     showToast(`Failed to save: ${err}`, 'error');
@@ -2495,6 +2618,7 @@ async function loadTrendsView() {
     renderBurnoutChart(data.burnout);
     // Generate AI summary async (don't block)
     generateTrendsAiSummary(data);
+    applyTrendsProfileMode();
   } catch (err) {
     showToast(`Failed to load trends: ${err}`, 'error');
   }
@@ -2559,11 +2683,12 @@ Active projects: ${focusProjects}`;
 }
 
 function renderTrendsHeader(productivity, prediction) {
+  const personal = isPersonalProfile();
   const trendIcon = productivity.trend === 'improving' ? '\u2197' : productivity.trend === 'declining' ? '\u2198' : '\u2192';
   dom.trendsPredictions.innerHTML = renderStatCards([
-    { value: productivity.current_score, label: `Productivity ${trendIcon}` },
+    { value: productivity.current_score, label: `${personal ? 'Momentum' : 'Productivity'} ${trendIcon}` },
     { value: productivity.baseline_avg, label: '12-wk Average' },
-    { value: prediction.confidence.charAt(0).toUpperCase() + prediction.confidence.slice(1), label: 'Forecast Confidence' },
+    { value: prediction.confidence.charAt(0).toUpperCase() + prediction.confidence.slice(1), label: personal ? 'Signal Confidence' : 'Forecast Confidence' },
     { value: productivity.trend.charAt(0).toUpperCase() + productivity.trend.slice(1), label: 'Trend' },
   ]);
 }
