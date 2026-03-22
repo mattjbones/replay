@@ -2075,6 +2075,7 @@ async function exchangeSlackToken() {
 function renderSettingsPrefs() {
   if (!state.config) { dom.settingsPrefs.innerHTML = ''; return; }
   const c = state.config;
+  const llm = c.llm || {};
   const wh = c.working_hours || {};
   const workingDays = wh.working_days || ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
   const allDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -2101,6 +2102,14 @@ function renderSettingsPrefs() {
         <option value="trunk"${c.github?.workflow === 'trunk' ? ' selected' : ''}>Trunk-based (commits to main)</option>
       </select>
       <div class="pref-hint">PR-based shows PRs first; trunk-based emphasizes commits</div>
+    </div>
+    <div class="pref-row">
+      <label class="pref-label">LLM profile</label>
+      <select class="pref-input" id="pref-llm-profile">
+        <option value="work"${(llm.profile || 'work') === 'work' ? ' selected' : ''}>Work</option>
+        <option value="personal"${llm.profile === 'personal' ? ' selected' : ''}>Personal</option>
+      </select>
+      <div class="pref-hint">Personal mode favors momentum/effort framing over velocity/burnout language</div>
     </div>
     <div class="pref-row">
       <label class="pref-label">Slack user ID</label>
@@ -2316,6 +2325,8 @@ async function savePreferences() {
   const ghUsername = document.getElementById('pref-gh-username')?.value?.trim();
   state.config.github.username = ghUsername || null;
   state.config.github.workflow = document.getElementById('pref-gh-workflow')?.value || 'pr';
+  if (!state.config.llm) state.config.llm = {};
+  state.config.llm.profile = document.getElementById('pref-llm-profile')?.value || 'work';
   const slackUserId = document.getElementById('pref-slack-userid')?.value?.trim();
   state.config.slack.user_id = slackUserId || null;
   const ignoredStr = document.getElementById('pref-ignored-channels')?.value || '';
@@ -2506,12 +2517,25 @@ async function generateTrendsAiSummary(data) {
     `${pp.project} (${Math.round(pp.probability * 100)}%)`
   ).join(', ');
   const focusProjects = Object.keys(data.focus.projects).join(', ');
+  const llmProfile = state.config?.llm?.profile || 'work';
 
   const forecastLines = Object.entries(f.forecasts).map(([kind, vals]) =>
     `${kind}: ${vals.map(v => v.toFixed(1)).join(', ')}`
   ).join('; ');
 
-  const prompt = `You are analyzing a software engineer's 12-week activity trends. Give a concise, insightful 3-4 bullet analysis in markdown. Be specific with numbers. Highlight what's notable — don't just restate data.
+  const prompt = llmProfile === 'personal'
+    ? `You are analyzing a personal developer's 12-week activity trends. Give a concise, insightful 3-4 bullet analysis in markdown.
+Focus on momentum, consistency, and craft development. Mention effort signals carefully (sustained focus/time investment) only when evidence is clear.
+Avoid corporate performance framing and do not over-index on burnout language.
+
+Momentum: current score ${p.current_score}, baseline avg ${p.baseline_avg}, trend ${p.trend}
+Effort note: off-hours trend ${b.trend_direction}, latest off-hours ${b.off_hours_pct.slice(-1)[0]?.toFixed(1) || 0}%
+Forecast (next 3 weeks): ${forecastLines}
+Anomalies: ${anomalyDesc}
+Day types: ${clusterDesc}
+Tomorrow prediction: ${projPred}
+Active projects: ${focusProjects}`
+    : `You are analyzing a software engineer's 12-week activity trends. Give a concise, insightful 3-4 bullet analysis in markdown. Be specific with numbers. Highlight what's notable — don't just restate data.
 
 Productivity: current score ${p.current_score}, baseline avg ${p.baseline_avg}, trend ${p.trend}
 Burnout: off-hours trend ${b.trend_direction}, latest off-hours ${b.off_hours_pct.slice(-1)[0]?.toFixed(1) || 0}%

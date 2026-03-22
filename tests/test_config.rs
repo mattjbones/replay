@@ -11,6 +11,7 @@ fn default_config_has_expected_values() {
     assert_eq!(config.ttl.warm_minutes, 60);
     assert_eq!(config.ttl.cold_minutes, 1440);
     assert!(!config.llm.enabled);
+    assert_eq!(config.llm.profile.to_string(), "work");
     assert_eq!(config.working_hours.work_start, "09:00");
     assert_eq!(config.working_hours.work_end, "17:00");
     assert_eq!(config.working_hours.working_days.len(), 5);
@@ -26,6 +27,7 @@ fn config_serializes_to_toml_and_back() {
     assert_eq!(parsed.schedule.sync_interval_minutes, config.schedule.sync_interval_minutes);
     assert_eq!(parsed.ttl.warm_minutes, config.ttl.warm_minutes);
     assert_eq!(parsed.llm.enabled, config.llm.enabled);
+    assert_eq!(parsed.llm.profile, config.llm.profile);
     assert_eq!(parsed.working_hours.timezone, config.working_hours.timezone);
 }
 
@@ -61,6 +63,7 @@ enabled = true
     let config: AppConfig = toml::from_str(partial).expect("partial TOML should work");
     assert_eq!(config.schedule.sync_interval_minutes, 15);
     assert!(config.llm.enabled);
+    assert_eq!(config.llm.profile.to_string(), "work");
     // Other fields should have defaults
     assert_eq!(config.ttl.warm_minutes, 60);
 }
@@ -76,4 +79,17 @@ fn github_workflow_enum_serialization() {
     let trunk = GitHubWorkflow::Trunk;
     let json = serde_json::to_string(&trunk).unwrap();
     assert_eq!(json, r#""trunk""#);
+}
+
+#[test]
+fn llm_profile_enum_serialization() {
+    use recap::config::LlmProfile;
+
+    let work = LlmProfile::Work;
+    let json = serde_json::to_string(&work).unwrap();
+    assert_eq!(json, r#""work""#);
+
+    let personal = LlmProfile::Personal;
+    let json = serde_json::to_string(&personal).unwrap();
+    assert_eq!(json, r#""personal""#);
 }

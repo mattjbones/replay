@@ -282,6 +282,8 @@ pub struct LlmConfig {
     pub enabled: bool,
     #[serde(default = "default_llm_model")]
     pub model: String,
+    #[serde(default)]
+    pub profile: LlmProfile,
 }
 
 impl Default for LlmConfig {
@@ -289,10 +291,29 @@ impl Default for LlmConfig {
         Self {
             enabled: false,
             model: default_llm_model(),
+            profile: LlmProfile::default(),
         }
     }
 }
 
 fn default_llm_model() -> String {
     "claude-haiku-4-5-20251001".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum LlmProfile {
+    #[default]
+    Work,
+    Personal,
+}
+
+impl std::fmt::Display for LlmProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LlmProfile::Work => write!(f, "work"),
+            LlmProfile::Personal => write!(f, "personal"),
+        }
+    }
 }
