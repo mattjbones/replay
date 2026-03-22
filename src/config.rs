@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     #[serde(default = "default_schedule")]
     pub schedule: ScheduleConfig,
@@ -36,21 +36,6 @@ fn default_schedule() -> ScheduleConfig {
     ScheduleConfig::default()
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            schedule: ScheduleConfig::default(),
-            ttl: TtlConfig::default(),
-            github: GitHubConfig::default(),
-            linear: LinearConfig::default(),
-            slack: SlackConfig::default(),
-            notion: NotionConfig::default(),
-            llm: LlmConfig::default(),
-            working_hours: WorkingHoursConfig::default(),
-            dashboard_layout: HashMap::new(),
-        }
-    }
-}
 
 impl AppConfig {
     /// Returns the configuration directory: ~/.config/recap/
@@ -198,15 +183,11 @@ fn default_cold_minutes() -> i64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum GitHubWorkflow {
+    #[default]
     Pr,
     Trunk,
-}
-
-impl Default for GitHubWorkflow {
-    fn default() -> Self {
-        GitHubWorkflow::Pr
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -222,7 +203,7 @@ pub struct LinearConfig {
     // Tokens are stored in the system keychain, not in config.
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SlackConfig {
     #[serde(default)]
     pub user_id: Option<String>,
@@ -236,16 +217,6 @@ pub struct SlackConfig {
     pub client_secret: Option<String>,
 }
 
-impl Default for SlackConfig {
-    fn default() -> Self {
-        Self {
-            user_id: None,
-            ignored_channels: Vec::new(),
-            client_id: None,
-            client_secret: None,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NotionConfig {

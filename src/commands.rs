@@ -286,7 +286,7 @@ pub async fn get_chart_data(
         let label = current.format("%a %d").to_string();
         labels.push(label.clone());
         day_map.insert(label, HashMap::new());
-        current = current + chrono::Duration::days(1);
+        current += chrono::Duration::days(1);
     }
 
     let series = ["merges", "reviews", "commits", "issues", "messages"];
@@ -706,14 +706,14 @@ pub fn kmeans(data: &[Vec<f64>], k: usize, max_iter: usize) -> (Vec<usize>, Vec<
         }
         if !changed { break; }
         // Recompute centroids
-        for c in 0..k {
+        for (c, centroid) in centroids.iter_mut().enumerate().take(k) {
             let members: Vec<&Vec<f64>> = data.iter().zip(&assignments)
                 .filter(|(_, &a)| a == c)
                 .map(|(d, _)| d)
                 .collect();
             if members.is_empty() { continue; }
             let n = members.len() as f64;
-            centroids[c] = (0..dim)
+            *centroid = (0..dim)
                 .map(|d| members.iter().map(|m| m[d]).sum::<f64>() / n)
                 .collect();
         }
