@@ -8,6 +8,87 @@ use crate::models::{Activity, ActivityKind, Source};
 
 use super::{Integration, IntegrationError};
 
+// ---------------------------------------------------------------------------
+// Shared helpers — eliminate duplication across GitHub API call sites
+// ---------------------------------------------------------------------------
+
+/// Build an authenticated `reqwest::Client` with GitHub API headers and resolve the username.
+/// Returns `(client, username)` or an error message.
+pub fn github_authenticated_client(config: &AppConfig) -> Result<(reqwest::Client, String), String> {
+    let token = AuthManager::get_github_token()
+        .ok()
+        .flatten()
+        .ok_or_else(|| "GitHub not connected".to_string())?;
+
+    if token.is_empty() {
+        return Err("GitHub token is empty".to_string());
+    }
+
+    let username = resolve_github_username(config)
+        .ok_or_else(|| "No GitHub username configured and `gh api user` failed".to_string())?;
+
+    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|e| format!("Invalid token for header: {e}"))?,
+    );
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/vnd.github.v3+json"),
+    );
+    headers.insert(USER_AGENT, HeaderValue::from_static("recap/0.1"));
+
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .map_err(|e| format!("Failed to build client: {e}"))?;
+
+    Ok((client, username))
+}
+
+/// Resolve the GitHub username: config value → `gh api user` CLI fallback → None.
+fn resolve_github_username(config: &AppConfig) -> Option<String> {
+    if let Some(ref u) = config.github.username {
+        if !u.is_empty() {
+            return Some(u.clone());
+        }
+    }
+    // Fall back to gh CLI (check common paths for bundled .app)
+    let gh_path = crate::auth::find_gh_binary()?;
+    std::process::Command::new(&gh_path)
+        .args(["api", "user", "--jq", ".login"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        })
+}
+
+/// Format a `since` timestamp for the GitHub Search API, falling back to `days` ago
+/// when no cursor is available (first sync).
+fn since_or_default(since: Option<DateTime<Utc>>, days: i64) -> String {
+    since
+        .unwrap_or_else(|| Utc::now() - chrono::Duration::days(days))
+        .format("%Y-%m-%dT%H:%M:%S")
+        .to_string()
+}
+
+/// Extract `"owner/repo"` from a GitHub API `repository_url`
+/// (e.g. `"https://api.github.com/repos/acme/widgets"` → `"acme/widgets"`).
+fn repo_name_from_url(url: &str) -> String {
+    let parts: Vec<&str> = url.rsplit('/').take(2).collect();
+    if parts.len() == 2 {
+        format!("{}/{}", parts[1], parts[0])
+    } else {
+        url.to_string()
+    }
+}
+
 pub struct GitHubIntegration {
     client: reqwest::Client,
     #[allow(dead_code)]
@@ -16,26 +97,6 @@ pub struct GitHubIntegration {
 }
 
 impl GitHubIntegration {
-    /// Try to resolve the GitHub username: config → `gh api user` → fail.
-    fn resolve_username(config: &AppConfig) -> Option<String> {
-        if let Some(ref u) = config.github.username {
-            if !u.is_empty() {
-                return Some(u.clone());
-            }
-        }
-        // Fall back to gh CLI (check common paths for bundled .app)
-        let gh_path = crate::auth::find_gh_binary()?;
-        std::process::Command::new(&gh_path)
-            .args(["api", "user", "--jq", ".login"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .and_then(|o| {
-                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if s.is_empty() { None } else { Some(s) }
-            })
-    }
-
     pub fn new(config: AppConfig) -> Option<Self> {
         let token = AuthManager::get_github_token()
             .ok()
@@ -47,34 +108,15 @@ impl GitHubIntegration {
             return None;
         }
 
-        let username = match Self::resolve_username(&config) {
-            Some(u) => u,
-            None => {
-                tracing::warn!("github: no username configured and `gh api user` failed, skipping");
+        let (client, username) = match github_authenticated_client(&config) {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!("github: {e}, skipping");
                 return None;
             }
         };
 
         tracing::info!("github: using username '{username}'");
-
-        use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {token}"))
-                .expect("invalid token for header"),
-        );
-        headers.insert(
-            ACCEPT,
-            HeaderValue::from_static("application/vnd.github.v3+json"),
-        );
-        headers.insert(USER_AGENT, HeaderValue::from_static("recap/0.1"));
-
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .expect("failed to build reqwest client");
 
         Some(Self {
             client,
@@ -262,14 +304,7 @@ impl GitHubIntegration {
         &self,
         since: Option<DateTime<Utc>>,
     ) -> Result<Vec<Activity>, IntegrationError> {
-        let since_str = since
-            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string())
-            .unwrap_or_else(|| {
-                // On first sync (no cursor), look back 90 days for 12-week trends
-                (Utc::now() - chrono::Duration::days(90))
-                    .format("%Y-%m-%dT%H:%M:%S")
-                    .to_string()
-            });
+        let since_str = since_or_default(since, 90);
 
         let query = format!(
             "author:{} type:pr updated:>{}",
@@ -322,7 +357,7 @@ impl GitHubIntegration {
             let html_url = item["html_url"].as_str().unwrap_or_default().to_string();
             let state = item["state"].as_str().unwrap_or_default().to_string();
             let repo_url = item["repository_url"].as_str().unwrap_or_default();
-            let repo_name = repo_url.rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+            let repo_name = repo_name_from_url(repo_url);
             let updated_str = item["updated_at"].as_str().unwrap_or_default().to_string();
             let merged_at_present = item["pull_request"]
                 .get("merged_at")
@@ -408,14 +443,7 @@ impl GitHubIntegration {
         &self,
         since: Option<DateTime<Utc>>,
     ) -> Result<Vec<Activity>, IntegrationError> {
-        let since_str = since
-            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string())
-            .unwrap_or_else(|| {
-                // On first sync, look back 90 days for 12-week trends
-                (Utc::now() - chrono::Duration::days(90))
-                    .format("%Y-%m-%dT%H:%M:%S")
-                    .to_string()
-            });
+        let since_str = since_or_default(since, 90);
 
         let query = format!(
             "involves:{} type:issue updated:>{}",
@@ -479,7 +507,7 @@ impl GitHubIntegration {
             let html_url = item["html_url"].as_str().unwrap_or_default().to_string();
             let state = item["state"].as_str().unwrap_or_default().to_string();
             let repo_url = item["repository_url"].as_str().unwrap_or_default();
-            let repo_name = repo_url.rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+            let repo_name = repo_name_from_url(repo_url);
 
             // Use closed_at for closed issues, created_at for open ones
             let (kind, timestamp_str) = if state == "closed" {
@@ -819,38 +847,8 @@ pub struct OpenPr {
 
 /// Fetch all open and draft PRs authored by the configured user.
 pub async fn fetch_open_prs(config: &crate::config::AppConfig) -> Result<Vec<OpenPr>, String> {
-    let token = crate::auth::AuthManager::get_github_token()
-        .ok()
-        .flatten()
-        .ok_or_else(|| "GitHub not connected".to_string())?;
-
-    let username_owned: String = config.github.username.clone()
-        .filter(|u| !u.is_empty())
-        .or_else(|| {
-            let gh_path = crate::auth::find_gh_binary()?;
-            std::process::Command::new(&gh_path)
-                .args(["api", "user", "--jq", ".login"])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .and_then(|o| {
-                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if s.is_empty() { None } else { Some(s) }
-                })
-        })
-        .ok_or_else(|| "No GitHub username configured".to_string())?;
+    let (client, username_owned) = github_authenticated_client(config)?;
     let username = username_owned.as_str();
-
-    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
-    let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {token}")).unwrap());
-    headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github.v3+json"));
-    headers.insert(USER_AGENT, HeaderValue::from_static("recap/0.1"));
-
-    let client = reqwest::Client::builder()
-        .default_headers(headers)
-        .build()
-        .map_err(|e| format!("Failed to build client: {e}"))?;
 
     let query = format!("author:{username} type:pr state:open");
     let url = format!(
@@ -879,7 +877,7 @@ pub async fn fetch_open_prs(config: &crate::config::AppConfig) -> Result<Vec<Ope
         let title = item["title"].as_str().unwrap_or("Untitled").to_string();
         let html_url = item["html_url"].as_str().unwrap_or_default().to_string();
         let repo_url = item["repository_url"].as_str().unwrap_or_default();
-        let repo = repo_url.rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+        let repo = repo_name_from_url(repo_url);
         let created_at = item["created_at"].as_str().unwrap_or_default().to_string();
         let updated_at = item["updated_at"].as_str().unwrap_or_default().to_string();
         let is_draft = item["draft"].as_bool().unwrap_or(false);
@@ -932,38 +930,8 @@ pub struct GitHubIssue {
 
 /// Fetch open issues assigned to the configured user.
 pub async fn fetch_github_issues(config: &crate::config::AppConfig) -> Result<Vec<GitHubIssue>, String> {
-    let token = crate::auth::AuthManager::get_github_token()
-        .ok()
-        .flatten()
-        .ok_or_else(|| "GitHub not connected".to_string())?;
-
-    let username_owned: String = config.github.username.clone()
-        .filter(|u| !u.is_empty())
-        .or_else(|| {
-            let gh_path = crate::auth::find_gh_binary()?;
-            std::process::Command::new(&gh_path)
-                .args(["api", "user", "--jq", ".login"])
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .and_then(|o| {
-                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if s.is_empty() { None } else { Some(s) }
-                })
-        })
-        .ok_or_else(|| "No GitHub username configured".to_string())?;
+    let (client, username_owned) = github_authenticated_client(config)?;
     let username = username_owned.as_str();
-
-    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
-    let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {token}")).unwrap());
-    headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github.v3+json"));
-    headers.insert(USER_AGENT, HeaderValue::from_static("recap/0.1"));
-
-    let client = reqwest::Client::builder()
-        .default_headers(headers)
-        .build()
-        .map_err(|e| format!("Failed to build client: {e}"))?;
 
     let query = format!("assignee:{username} type:issue state:open");
     let url = format!(
@@ -997,7 +965,7 @@ pub async fn fetch_github_issues(config: &crate::config::AppConfig) -> Result<Ve
         let title = item["title"].as_str().unwrap_or("Untitled").to_string();
         let html_url = item["html_url"].as_str().unwrap_or_default().to_string();
         let repo_url = item["repository_url"].as_str().unwrap_or_default();
-        let repo = repo_url.rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/");
+        let repo = repo_name_from_url(repo_url);
         let created_at = item["created_at"].as_str().unwrap_or_default().to_string();
         let updated_at = item["updated_at"].as_str().unwrap_or_default().to_string();
         let comments = item["comments"].as_u64().unwrap_or(0);
