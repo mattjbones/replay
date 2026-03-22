@@ -44,7 +44,7 @@ impl SlackIntegration {
     /// Updates both keychain entries if successful.
     async fn try_refresh_token(&self) -> Result<String, IntegrationError> {
         let refresh_token = AuthManager::get_slack_refresh_token()
-            .map_err(|e| IntegrationError::Auth(e))?
+            .map_err(IntegrationError::Auth)?
             .ok_or_else(|| IntegrationError::Auth("no refresh token stored".to_string()))?;
 
         let client_id = self.client_id.as_deref()
@@ -79,7 +79,7 @@ impl SlackIntegration {
 
         // Store the new access token.
         AuthManager::set_token(&Source::Slack, &new_access)
-            .map_err(|e| IntegrationError::Auth(e))?;
+            .map_err(IntegrationError::Auth)?;
 
         // Store new refresh token if provided (rotation gives a new one each time).
         if let Some(new_refresh) = body.get("refresh_token").and_then(|v| v.as_str()) {

@@ -286,7 +286,7 @@ pub async fn get_chart_data(
         let label = current.format("%a %d").to_string();
         labels.push(label.clone());
         day_map.insert(label, HashMap::new());
-        current = current + chrono::Duration::days(1);
+        current += chrono::Duration::days(1);
     }
 
     let series = ["merges", "reviews", "commits", "issues", "messages"];
@@ -627,7 +627,7 @@ fn pad_weeks_to_min(weeks: &mut Vec<String>, min_weeks: usize) -> Option<String>
 
 // --- ML helpers ---
 
-fn linear_regression(ys: &[f64]) -> (f64, f64) {
+pub fn linear_regression(ys: &[f64]) -> (f64, f64) {
     let n = ys.len() as f64;
     if n < 2.0 {
         return (0.0, ys.first().copied().unwrap_or(0.0));
@@ -648,7 +648,7 @@ fn linear_regression(ys: &[f64]) -> (f64, f64) {
 
 /// Holt-Winters double exponential smoothing for forecasting.
 /// Returns `ahead` future values.
-fn holt_winters_forecast(ys: &[f64], ahead: usize, alpha: f64, beta: f64) -> Vec<f64> {
+pub fn holt_winters_forecast(ys: &[f64], ahead: usize, alpha: f64, beta: f64) -> Vec<f64> {
     if ys.is_empty() { return vec![0.0; ahead]; }
     if ys.len() == 1 { return vec![ys[0]; ahead]; }
     let mut level = ys[0];
@@ -662,7 +662,7 @@ fn holt_winters_forecast(ys: &[f64], ahead: usize, alpha: f64, beta: f64) -> Vec
 }
 
 /// Z-score anomaly detection. Returns indices where |z| > threshold.
-fn detect_anomalies(ys: &[f64], threshold: f64) -> Vec<(usize, f64)> {
+pub fn detect_anomalies(ys: &[f64], threshold: f64) -> Vec<(usize, f64)> {
     let n = ys.len() as f64;
     if n < 3.0 { return Vec::new(); }
     let mean = ys.iter().sum::<f64>() / n;
@@ -678,7 +678,7 @@ fn detect_anomalies(ys: &[f64], threshold: f64) -> Vec<(usize, f64)> {
 }
 
 /// K-means clustering on f64 vectors. Returns (assignments, centroids).
-fn kmeans(data: &[Vec<f64>], k: usize, max_iter: usize) -> (Vec<usize>, Vec<Vec<f64>>) {
+pub fn kmeans(data: &[Vec<f64>], k: usize, max_iter: usize) -> (Vec<usize>, Vec<Vec<f64>>) {
     if data.is_empty() || k == 0 { return (Vec::new(), Vec::new()); }
     let dim = data[0].len();
     let k = k.min(data.len());
@@ -706,14 +706,14 @@ fn kmeans(data: &[Vec<f64>], k: usize, max_iter: usize) -> (Vec<usize>, Vec<Vec<
         }
         if !changed { break; }
         // Recompute centroids
-        for c in 0..k {
+        for (c, centroid) in centroids.iter_mut().enumerate().take(k) {
             let members: Vec<&Vec<f64>> = data.iter().zip(&assignments)
                 .filter(|(_, &a)| a == c)
                 .map(|(d, _)| d)
                 .collect();
             if members.is_empty() { continue; }
             let n = members.len() as f64;
-            centroids[c] = (0..dim)
+            *centroid = (0..dim)
                 .map(|d| members.iter().map(|m| m[d]).sum::<f64>() / n)
                 .collect();
         }
@@ -722,7 +722,7 @@ fn kmeans(data: &[Vec<f64>], k: usize, max_iter: usize) -> (Vec<usize>, Vec<Vec<
 }
 
 /// Naive Bayes: P(project | dow) using frequency counts.
-fn naive_bayes_predict(
+pub fn naive_bayes_predict(
     dow_project: &[(i32, String, i64)],
     target_dow: i32,
 ) -> Vec<(String, f64)> {

@@ -91,11 +91,12 @@ impl SyncScheduler {
         }
 
         // Fan-out: run each stale integration concurrently via JoinSet.
-        let mut join_set: JoinSet<(
+        type SyncResult = (
             Source,
             Arc<Database>,
             Result<(Vec<crate::models::Activity>, String), IntegrationError>,
-        )> = JoinSet::new();
+        );
+        let mut join_set: JoinSet<SyncResult> = JoinSet::new();
 
         for (idx, cursor) in work {
             let db = Arc::clone(&self.db);
