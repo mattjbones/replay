@@ -17,10 +17,21 @@ async function checkForUpdates(silent = true) {
   state.updateVersion = null;
   state.updateError = null;
   state._updateObj = null;
+
+  if (!window.__TAURI__?.updater?.check) {
+    console.error("Updater API not available");
+    state.updateStatus = 'error';
+    state.updateError = 'Updater API not available';
+    renderUpdateBanner();
+    return;
+  }
+
   try {
+    console.log("Checking for updates...");
     const { check } = window.__TAURI__.updater;
     const update = await check();
     if (update?.available) {
+      console.log(`Update available: v${update.version}`);
       state.updateStatus = 'available';
       state.updateVersion = update.version;
       state._updateObj = update;
@@ -35,10 +46,11 @@ async function checkForUpdates(silent = true) {
         }
       }
     } else {
+      console.log("App is up to date");
       state.updateStatus = 'up_to_date';
     }
   } catch (e) {
-    console.warn("Update check failed:", e);
+    console.error("Update check failed:", e);
     state.updateStatus = 'error';
     state.updateError = String(e);
   }
