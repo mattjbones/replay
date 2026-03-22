@@ -940,6 +940,12 @@ fn parse_issues_event(
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct GitHubLabel {
+    pub name: String,
+    pub color: String, // hex color without '#', e.g. "d73a4a"
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct OpenPr {
     pub number: u64,
     pub title: String,
@@ -948,7 +954,7 @@ pub struct OpenPr {
     pub state: String,       // "open" or "draft"
     pub created_at: String,
     pub updated_at: String,
-    pub labels: Vec<String>,
+    pub labels: Vec<GitHubLabel>,
     pub review_status: String, // "approved", "changes_requested", "review_required", ""
     pub additions: u64,
     pub deletions: u64,
@@ -992,11 +998,15 @@ pub async fn fetch_open_prs(config: &crate::config::AppConfig) -> Result<Vec<Ope
         let updated_at = item["updated_at"].as_str().unwrap_or_default().to_string();
         let is_draft = item["draft"].as_bool().unwrap_or(false);
 
-        let labels: Vec<String> = item["labels"]
+        let labels: Vec<GitHubLabel> = item["labels"]
             .as_array()
             .unwrap_or(&empty_vec)
             .iter()
-            .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
+            .filter_map(|l| {
+                let name = l["name"].as_str()?.to_string();
+                let color = l["color"].as_str().unwrap_or("ededed").to_string();
+                Some(GitHubLabel { name, color })
+            })
             .collect();
 
         let (cc_type, cc_scope) = parse_conventional_commit(&title);
@@ -1034,7 +1044,7 @@ pub struct GitHubIssue {
     pub state: String,
     pub created_at: String,
     pub updated_at: String,
-    pub labels: Vec<String>,
+    pub labels: Vec<GitHubLabel>,
     pub comments: u64,
 }
 
@@ -1079,11 +1089,15 @@ pub async fn fetch_github_issues(config: &crate::config::AppConfig) -> Result<Ve
         let updated_at = item["updated_at"].as_str().unwrap_or_default().to_string();
         let comments = item["comments"].as_u64().unwrap_or(0);
 
-        let labels: Vec<String> = item["labels"]
+        let labels: Vec<GitHubLabel> = item["labels"]
             .as_array()
             .unwrap_or(&empty_vec)
             .iter()
-            .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
+            .filter_map(|l| {
+                let name = l["name"].as_str()?.to_string();
+                let color = l["color"].as_str().unwrap_or("ededed").to_string();
+                Some(GitHubLabel { name, color })
+            })
             .collect();
 
         issues.push(GitHubIssue {
