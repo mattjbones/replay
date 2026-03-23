@@ -1,6 +1,6 @@
 use chrono::Utc;
-use recap::digest::build_digest;
-use recap::models::*;
+use recap_core::digest::build_digest;
+use recap_core::models::*;
 
 fn make_activity(source: Source, kind: ActivityKind, title: &str) -> Activity {
     Activity::new(

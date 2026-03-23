@@ -18,12 +18,14 @@ jobs:
         run: |
           VERSION="${{ inputs.version }}"
           echo "Building version: $VERSION"
+          # Update workspace version
           sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          # Update tauri.conf.json in crates/recap-app
           python3 -c "
           import json
-          with open('tauri.conf.json') as f: c = json.load(f)
+          with open('crates/recap-app/tauri.conf.json') as f: c = json.load(f)
           c['version'] = '$VERSION'
-          with open('tauri.conf.json', 'w') as f: json.dump(c, f, indent=2)
+          with open('crates/recap-app/tauri.conf.json', 'w') as f: json.dump(c, f, indent=2)
           "
 
       - name: Install Rust stable
@@ -41,21 +43,21 @@ jobs:
 
       - name: Generate .icns from icon.png
         run: |
-          mkdir -p icons/icon.iconset
-          sips -z 16 16     icons/icon.png --out icons/icon.iconset/icon_16x16.png
-          sips -z 32 32     icons/icon.png --out icons/icon.iconset/icon_16x16@2x.png
-          sips -z 32 32     icons/icon.png --out icons/icon.iconset/icon_32x32.png
-          sips -z 64 64     icons/icon.png --out icons/icon.iconset/icon_32x32@2x.png
-          sips -z 128 128   icons/icon.png --out icons/icon.iconset/icon_128x128.png
-          sips -z 256 256   icons/icon.png --out icons/icon.iconset/icon_128x128@2x.png
-          sips -z 256 256   icons/icon.png --out icons/icon.iconset/icon_256x256.png
-          sips -z 512 512   icons/icon.png --out icons/icon.iconset/icon_256x256@2x.png
-          sips -z 512 512   icons/icon.png --out icons/icon.iconset/icon_512x512.png
-          sips -z 1024 1024 icons/icon.png --out icons/icon.iconset/icon_512x512@2x.png
-          iconutil -c icns icons/icon.iconset -o icons/icon.icns
+          mkdir -p crates/recap-app/icons/icon.iconset
+          sips -z 16 16     crates/recap-app/icons/icon.png --out crates/recap-app/icons/icon.iconset/icon_16x16.png
+          sips -z 32 32     crates/recap-app/icons/icon.png --out crates/recap-app/icons/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32     crates/recap-app/icons/icon.png --out crates/recap-app/icons/icon.iconset/icon_32x32.png
+          sips -z 64 64     crates/recap-app/icons/icon.png --out crates/recap-app/icons/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128   crates/recap-app/icons/icon.png --out crates/recap-app/icons/icon.iconset/icon_128x128.png
+          sips -z 256 256   crates/recap-app/icons/icon.png --out crates/recap-app/icons/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256   crates/recap-app/icons/icon.png --out crates/recap-app/icons/icon.iconset/icon_256x256.png
+          sips -z 512 512   crates/recap-app/icons/icon.png --out crates/recap-app/icons/icon.iconset/icon_256x256@2x.png
+          sips -z 512 512   crates/recap-app/icons/icon.png --out crates/recap-app/icons/icon.iconset/icon_512x512.png
+          sips -z 1024 1024 crates/recap-app/icons/icon.png --out crates/recap-app/icons/icon.iconset/icon_512x512@2x.png
+          iconutil -c icns crates/recap-app/icons/icon.iconset -o crates/recap-app/icons/icon.icns
 
       - name: Build Tauri app
-        run: cargo tauri build --target aarch64-apple-darwin
+        run: cargo tauri build --target aarch64-apple-darwin --config crates/recap-app/tauri.conf.json
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}

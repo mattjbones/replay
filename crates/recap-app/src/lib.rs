@@ -1,17 +1,12 @@
-pub mod auth;
 pub mod commands;
-pub mod config;
-pub mod db;
-pub mod digest;
-pub mod integrations;
-pub mod llm;
-pub mod models;
 pub mod notifications;
-pub mod sync;
 
 use std::sync::Arc;
 
 use tauri::Manager;
+use recap_core::config;
+use recap_core::db;
+use recap_core::sync;
 use commands::AppState;
 
 pub fn run() {

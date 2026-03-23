@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "identifier": "com.recap.desktop",
   "build": {
-    "frontendDist": "./ui"
+    "frontendDist": "../../ui"
   },
   "app": {
     "withGlobalTauri": true,

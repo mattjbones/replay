@@ -1,4 +1,4 @@
-use recap::config::AppConfig;
+use recap_core::config::AppConfig;
 
 #[test]
 fn default_config_has_expected_values() {
@@ -67,7 +67,7 @@ enabled = true
 
 #[test]
 fn github_workflow_enum_serialization() {
-    use recap::config::GitHubWorkflow;
+    use recap_core::config::GitHubWorkflow;
 
     let pr = GitHubWorkflow::Pr;
     let json = serde_json::to_string(&pr).unwrap();

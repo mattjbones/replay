@@ -1,0 +1,24 @@
+[package]
+name = "recap-core"
+version.workspace = true
+edition.workspace = true
+description = "Shared library for Recap — models, database, integrations, sync, LLM"
+
+[dependencies]
+tokio = { workspace = true }
+rusqlite = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+glob-match = { workspace = true }
+dirs = { workspace = true }
+async-trait = { workspace = true }
+urlencoding = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }
+serde_json = { workspace = true }

@@ -1,6 +1,6 @@
-use crate::config::AppConfig;
-use crate::db::{get_activities_for_range, Database};
-use crate::models::Source;
+use recap_core::config::AppConfig;
+use recap_core::db::{get_activities_for_range, Database};
+use recap_core::models::Source;
 use std::sync::Arc;
 
 use chrono::{Local, TimeZone, Utc};

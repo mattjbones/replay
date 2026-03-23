@@ -1,0 +1,8 @@
+[package]
+name = "recap-daemon"
+version.workspace = true
+edition.workspace = true
+description = "Recap — headless daemon / MCP server (placeholder)"
+
+[dependencies]
+recap-core = { workspace = true }
