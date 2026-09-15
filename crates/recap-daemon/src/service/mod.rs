@@ -1,45 +1,60 @@
 pub mod launchd;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use recap_core::config::AppConfig;
 use recap_core::db::Database;
 use recap_core::sync::SyncScheduler;
 
-/// Load config, open the database, and build a SyncScheduler.
-fn init_scheduler() -> anyhow::Result<SyncScheduler> {
-    let config = AppConfig::load();
+use tokio::signal::unix::{signal, SignalKind};
+
+/// Open the database at the configured path.
+fn open_db() -> anyhow::Result<Arc<Database>> {
     let db_path = AppConfig::db_path();
-
     tracing::info!("opening database at {}", db_path.display());
-    let db = Arc::new(
+    Ok(Arc::new(
         Database::new(&db_path).map_err(|e| anyhow::anyhow!("failed to open database: {e}"))?,
-    );
-
-    Ok(SyncScheduler::new(db, config))
+    ))
 }
 
 /// Run the background sync loop indefinitely (for use under launchd).
 ///
-/// Listens for SIGTERM and SIGINT so the daemon shuts down gracefully
-/// when launchd (or a user) sends a termination signal.
+/// Each pass rebuilds the scheduler from a fresh `AppConfig`, so integrations
+/// connected (or tokens rotated) while the daemon is running are picked up on
+/// the next pass without a restart.
+///
+/// SIGTERM / SIGINT are honoured between passes. A pass that is already
+/// running is allowed to finish: `SyncScheduler::run_once` spawns tasks that
+/// borrow the scheduler and must be joined before it is dropped.
 pub async fn run_service() -> anyhow::Result<()> {
-    let scheduler = init_scheduler()?;
+    let db = open_db()?;
+
+    // Install both listeners up front so a signal that arrives mid-pass is
+    // not lost; it is observed as soon as the pass completes.
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
 
     tracing::info!("starting background sync service");
 
-    let mut sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    loop {
+        let config = AppConfig::load();
+        let interval_mins = config.schedule.sync_interval_minutes.max(1);
+        let scheduler = SyncScheduler::new(Arc::clone(&db), config);
 
-    tokio::select! {
-        _ = scheduler.start() => {
-            // start() loops forever; we only reach here if it somehow exits.
-        }
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("received SIGINT, initiating graceful shutdown");
-        }
-        _ = sigterm.recv() => {
-            tracing::info!("received SIGTERM, initiating graceful shutdown");
+        scheduler.run_once().await;
+        tracing::info!("sync pass complete; next pass in {interval_mins}m");
+
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(interval_mins * 60)) => {}
+            _ = sigint.recv() => {
+                tracing::info!("received SIGINT, shutting down");
+                break;
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM, shutting down");
+                break;
+            }
         }
     }
 
@@ -49,7 +64,8 @@ pub async fn run_service() -> anyhow::Result<()> {
 
 /// Run a single sync pass and exit.
 pub async fn run_once() -> anyhow::Result<()> {
-    let scheduler = init_scheduler()?;
+    let db = open_db()?;
+    let scheduler = SyncScheduler::new(db, AppConfig::load());
 
     tracing::info!("running one-shot sync");
     scheduler.run_once().await;

@@ -13,7 +13,8 @@ fn plist_path() -> anyhow::Result<PathBuf> {
         .join(format!("{PLIST_LABEL}.plist")))
 }
 
-/// Returns the path to the log directory (~/.config/recap/).
+/// Returns the path to the log directory: `<config dir>/recap/`, which on
+/// macOS is `~/Library/Application Support/recap/`.
 fn log_dir() -> anyhow::Result<PathBuf> {
     Ok(dirs::config_dir()
         .context("could not determine config directory")?
@@ -37,50 +38,32 @@ pub fn install() -> anyhow::Result<()> {
     // Ensure the log directory exists
     std::fs::create_dir_all(&log_dir)?;
 
-    let plist_content = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{PLIST_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{exe_str}</string>
-        <string>service</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>{stdout}</string>
-    <key>StandardErrorPath</key>
-    <string>{stderr}</string>
-</dict>
-</plist>
-"#,
-        stdout = stdout_log.display(),
-        stderr = stderr_log.display(),
-    );
+    let plist_content = render_plist(&exe_str, &stdout_log.display().to_string(), &stderr_log.display().to_string());
 
     std::fs::write(&plist, &plist_content)?;
     tracing::info!("wrote plist to {}", plist.display());
+
+    // `launchctl load` fails if the label is already loaded, which would leave
+    // the previous binary running against the new plist. Unload first;
+    // a failure here just means nothing was loaded.
+    let _ = Command::new("launchctl")
+        .args(["unload", &plist.display().to_string()])
+        .output();
 
     let output = Command::new("launchctl")
         .args(["load", &plist.display().to_string()])
         .output()?;
 
-    if output.status.success() {
-        tracing::info!("launchctl load succeeded");
-        println!("Daemon installed and loaded.");
-        println!("  Plist: {}", plist.display());
-        println!("  Logs:  {}", stdout_log.display());
-    } else {
+    if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         tracing::error!("launchctl load failed: {stderr}");
-        eprintln!("launchctl load failed: {stderr}");
+        anyhow::bail!("launchctl load failed: {}", stderr.trim());
     }
+
+    tracing::info!("launchctl load succeeded");
+    println!("Daemon installed and loaded.");
+    println!("  Plist: {}", plist.display());
+    println!("  Logs:  {}", stdout_log.display());
 
     Ok(())
 }
@@ -134,11 +117,7 @@ pub fn status() -> anyhow::Result<()> {
     match launchctl_output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            // Parse PID from launchctl output
-            let running = stdout.lines().any(|line| {
-                line.contains("PID") || line.starts_with('{')
-            });
-            if running {
+            if is_running(&stdout) {
                 println!("Process: running");
             } else {
                 println!("Process: loaded (not currently running)");
@@ -193,4 +172,94 @@ pub fn status() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Render the LaunchAgent plist. Paths are XML-escaped; the plist is a
+/// property list, so a `&` in a path would otherwise make it unparseable.
+fn render_plist(exe: &str, stdout_log: &str, stderr_log: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{PLIST_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+        <string>service</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+    <key>StandardOutPath</key>
+    <string>{stdout}</string>
+    <key>StandardErrorPath</key>
+    <string>{stderr}</string>
+</dict>
+</plist>
+"#,
+        exe = xml_escape(exe),
+        stdout = xml_escape(stdout_log),
+        stderr = xml_escape(stderr_log),
+    )
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Interpret `launchctl list <label>` output. launchd prints a `{ ... }`
+/// dictionary whenever the job is *loaded*; the `"PID"` key is present only
+/// while a process is actually running.
+fn is_running(launchctl_list_output: &str) -> bool {
+    launchctl_list_output
+        .lines()
+        .any(|line| line.trim_start().starts_with("\"PID\""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plist_contains_label_program_and_logs() {
+        let p = render_plist("/usr/local/bin/recap-daemon", "/tmp/out.log", "/tmp/err.log");
+        assert!(p.contains("<string>com.recap.daemon</string>"));
+        assert!(p.contains("<string>/usr/local/bin/recap-daemon</string>\n        <string>service</string>"));
+        assert!(p.contains("<key>StandardOutPath</key>\n    <string>/tmp/out.log</string>"));
+        assert!(p.contains("<key>StandardErrorPath</key>\n    <string>/tmp/err.log</string>"));
+        assert!(p.contains("<key>KeepAlive</key>\n    <true/>"));
+        assert!(p.contains("<key>ThrottleInterval</key>\n    <integer>60</integer>"));
+    }
+
+    #[test]
+    fn plist_escapes_xml_special_chars_in_paths() {
+        let p = render_plist("/Users/a&b/<recap>", "/tmp/o.log", "/tmp/e.log");
+        assert!(p.contains("<string>/Users/a&amp;b/&lt;recap&gt;</string>"));
+        assert!(!p.contains("a&b"));
+    }
+
+    #[test]
+    fn loaded_but_not_running_is_not_running() {
+        let out = "{\n\t\"Label\" = \"com.recap.daemon\";\n\t\"LastExitStatus\" = 256;\n};\n";
+        assert!(!is_running(out));
+    }
+
+    #[test]
+    fn running_job_has_pid_key() {
+        let out = "{\n\t\"Label\" = \"com.recap.daemon\";\n\t\"PID\" = 4242;\n\t\"Program\" = \"/x\";\n};\n";
+        assert!(is_running(out));
+    }
+
+    #[test]
+    fn empty_output_is_not_running() {
+        assert!(!is_running(""));
+    }
 }
