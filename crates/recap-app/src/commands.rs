@@ -359,7 +359,7 @@ pub async fn get_feature_breakdown(
         })
         .collect();
 
-    result.sort_by(|a, b| b.count.cmp(&a.count));
+    result.sort_by_key(|a| std::cmp::Reverse(a.count));
     Ok(result)
 }
 
@@ -937,7 +937,7 @@ pub async fn get_trends_data(
         *proj_totals.entry(proj.clone()).or_default() += cnt;
     }
     let mut top_projects: Vec<(String, i64)> = proj_totals.into_iter().collect();
-    top_projects.sort_by(|a, b| b.1.cmp(&a.1));
+    top_projects.sort_by_key(|a| std::cmp::Reverse(a.1));
     let top_names: Vec<String> = top_projects.iter().take(6).map(|(n, _)| n.clone()).collect();
 
     let mut focus_projects: HashMap<String, Vec<f64>> = HashMap::new();
