@@ -1,4 +1,4 @@
-.PHONY: dev build check clean release test test-rust test-ui lint
+.PHONY: dev build check clean release sidecar test test-rust test-ui lint
 
 # Development with hot reload (Tauri watches both Rust + frontend)
 dev:
@@ -12,9 +12,18 @@ check:
 build:
 	cargo tauri build --debug --config crates/recap-app/tauri.conf.json
 
-# Release build (.app + .dmg)
-release:
-	cargo tauri build --config crates/recap-app/tauri.conf.json
+# Build recap-daemon and stage it where Tauri expects a sidecar binary
+# (crates/recap-app/binaries/recap-daemon-<host-triple>). Only release
+# builds bundle it, via tauri.sidecar.conf.json, so dev/check don't need it.
+HOST_TRIPLE := $(shell rustc -vV | sed -n 's/^host: //p')
+sidecar:
+	cargo build --release -p recap-daemon
+	mkdir -p crates/recap-app/binaries
+	cp target/release/recap-daemon crates/recap-app/binaries/recap-daemon-$(HOST_TRIPLE)
+
+# Release build (.app + .dmg), with recap-daemon bundled inside the .app
+release: sidecar
+	cargo tauri build --config crates/recap-app/tauri.conf.json --config crates/recap-app/tauri.sidecar.conf.json
 
 # Clean build artifacts
 clean:
