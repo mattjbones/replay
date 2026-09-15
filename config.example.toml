@@ -18,3 +18,4 @@ cold_minutes = 1440
 [llm]
 enabled = false
 # model = "claude-haiku-4-5-20251001"
+# profile = "work"   # "work" or "personal"

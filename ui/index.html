@@ -381,6 +381,9 @@
 
         <!-- Productivity Score + Predictions -->
         <div class="source-stats-row" id="trends-predictions"></div>
+        <div class="trends-controls">
+          <button id="trends-advanced-toggle" class="btn btn-tiny">Advanced &#9662;</button>
+        </div>
 
         <!-- Anomaly Alerts -->
         <div id="anomaly-alerts"></div>
@@ -472,11 +475,11 @@
 
   <!-- Standup Modal -->
   <div id="standup-overlay" class="modal-overlay" style="display:none">
-    <div class="modal standup-modal">
-      <div class="modal-header">
-        <h2>Daily Standup</h2>
-        <button id="standup-close" class="btn btn-icon">&times;</button>
-      </div>
+      <div class="modal standup-modal">
+        <div class="modal-header">
+          <h2 id="standup-title">Daily Standup</h2>
+          <button id="standup-close" class="btn btn-icon">&times;</button>
+        </div>
       <div id="standup-modal-content" class="standup-content"></div>
       <div class="modal-footer">
         <button id="standup-copy" class="btn">&#x1f4cb; Copy to Clipboard</button>

@@ -16,6 +16,7 @@ Built with Rust and Tauri v2 for minimal resource usage (~10MB RAM, no Electron,
 - **Linear Progress** — completed/in-progress/other bar visualization with state filters
 - **AI Daily Briefing** — auto-generated summary via `claude` CLI, grouped by theme not tool
 - **Standup Generator** — "What I Did / What I Will Do" modal with copy-to-clipboard
+- **LLM profile modes** — choose `work` or `personal` framing for AI summaries/trend commentary
 - **Date navigation** — prev/next arrows to browse historical day/week/month data
 - **Background sync** every 5 minutes (configurable) with incremental fetching
 - **SQLite caching** with tiered TTL (5 min hot / 1 hour warm / 24 hour cold)
@@ -127,6 +128,7 @@ cold_minutes = 1440              # Cache TTL for older data (24h)
 [llm]
 enabled = false                  # Set to true for Anthropic API fallback
 # model = "claude-haiku-4-5-20251001"
+# profile = "work"               # "work" or "personal"
 ```
 
 ## Architecture
