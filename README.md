@@ -60,6 +60,43 @@ On first launch, Recap creates a default config and opens the dashboard. If any 
 | **GitHub** | Automatic if `gh` CLI is authenticated. Otherwise, paste a [Personal Access Token](https://github.com/settings/tokens) with `repo` and `read:user` scopes via Settings. |
 | **Linear** | Grab a Personal API key from **Settings > API > Personal API keys** in Linear. Paste via Settings. |
 
+## Background Daemon & MCP Server
+
+The app bundle ships a second binary, `recap-daemon`, at
+`/Applications/Recap.app/Contents/MacOS/recap-daemon`. It shares the same
+database, config, and keychain tokens as the app.
+
+**Keep data fresh when the app is closed:**
+
+```bash
+/Applications/Recap.app/Contents/MacOS/recap-daemon install   # registers a LaunchAgent
+/Applications/Recap.app/Contents/MacOS/recap-daemon status    # auth + last sync per source
+/Applications/Recap.app/Contents/MacOS/recap-daemon uninstall
+```
+
+Logs go to `~/Library/Application Support/recap/daemon.err.log`.
+
+**Query your activity from Claude Code or any MCP client:**
+
+```json
+{
+  "mcpServers": {
+    "recap": {
+      "command": "/Applications/Recap.app/Contents/MacOS/recap-daemon",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Tools: `get_digest`, `get_activities`, `get_trends`, `get_open_prs`,
+`get_open_tickets`, `get_github_issues`, `get_auth_status`, `get_config`,
+`trigger_sync`, `search_activities`. Resources: `recap://digest/today`,
+`recap://digest/week`, `recap://status`.
+
+Building from source? `make release` bundles the daemon automatically;
+`make sidecar` builds just the binary into `crates/recap-app/binaries/`.
+
 ## Sync & Polling
 
 Recap syncs data from all connected services on a background loop:

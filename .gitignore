@@ -3,3 +3,4 @@ gen/
 node_modules/
 tests/ui/test-results/
 tests/ui/playwright-report/
+crates/recap-app/binaries/

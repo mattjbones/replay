@@ -56,8 +56,14 @@ jobs:
           sips -z 1024 1024 crates/recap-app/icons/icon.png --out crates/recap-app/icons/icon.iconset/icon_512x512@2x.png
           iconutil -c icns crates/recap-app/icons/icon.iconset -o crates/recap-app/icons/icon.icns
 
+      - name: Build recap-daemon sidecar
+        run: |
+          cargo build --release -p recap-daemon --target aarch64-apple-darwin
+          mkdir -p crates/recap-app/binaries
+          cp target/aarch64-apple-darwin/release/recap-daemon crates/recap-app/binaries/recap-daemon-aarch64-apple-darwin
+
       - name: Build Tauri app
-        run: cargo tauri build --target aarch64-apple-darwin --config crates/recap-app/tauri.conf.json
+        run: cargo tauri build --target aarch64-apple-darwin --config crates/recap-app/tauri.conf.json --config crates/recap-app/tauri.sidecar.conf.json
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -67,8 +73,9 @@ jobs:
           APP_PATH="target/aarch64-apple-darwin/release/bundle/macos/Recap.app"
           DMG_PATH=$(find target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg")
 
-          # Codesign the .app
+          # Codesign the .app (--deep also signs the bundled recap-daemon sidecar)
           codesign --force --deep -s - "$APP_PATH"
+          test -x "$APP_PATH/Contents/MacOS/recap-daemon" || { echo "recap-daemon sidecar missing from bundle"; exit 1; }
 
           # Rebuild the DMG with the signed .app
           rm -f "$DMG_PATH"
