@@ -26,7 +26,29 @@ Built with Rust and Tauri v2 for minimal resource usage (~10MB RAM, no Electron,
 - **Daily reminder notification** at a configurable time (default: 5pm)
 - **System tray** with context menu (Open, Sync Now, Quit)
 
-## Quick Start
+## Install (macOS, Apple Silicon)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mattjbones/replay/main/scripts/install.sh | bash
+```
+
+This downloads the latest release, installs `Recap.app` to `/Applications`,
+registers the background sync daemon, and (if Claude Code is installed) adds
+the MCP server. Run it again to update. Set `RECAP_DAEMON=0` or `RECAP_MCP=0`
+to skip those steps.
+
+**Why a script?** Recap is ad-hoc signed, not notarized. macOS Gatekeeper only
+checks apps carrying the quarantine flag that browsers set on downloads; `curl`
+does not set it, so this path never prompts. If you download the DMG in a
+browser instead, macOS 15+ will refuse to open the app the first time: open
+**System Settings → Privacy & Security**, scroll to the message about Recap,
+and click **Open Anyway**. Or clear the flag yourself:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Recap.app
+```
+
+## Quick Start (from source)
 
 ### Prerequisites
 
