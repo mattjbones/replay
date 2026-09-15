@@ -19,10 +19,11 @@ test.describe("Tab navigation", () => {
     await expect(page.locator("#view-overview")).toBeHidden();
   });
 
-  test("clicking Slack tab shows the coming soon view", async ({ page }) => {
+  test("clicking Slack tab shows the Slack view", async ({ page }) => {
     await page.click('.nav-tab[data-view="slack"]');
     await expect(page.locator("#view-slack")).toBeVisible();
-    await expect(page.locator("#view-slack .coming-soon-badge")).toHaveText("Coming Soon");
+    await expect(page.locator("#view-overview")).toBeHidden();
+    await expect(page.locator("#slack-message-count")).toHaveText("0 messages");
   });
 
   test("clicking Notion tab shows the coming soon view", async ({ page }) => {

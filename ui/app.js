@@ -521,8 +521,14 @@ const SOURCE_META = {
     helper: 'Get key: <a href="https://linear.app/settings/api" target="_blank">Settings &rarr; API</a>',
     placeholder: "lin_api_...",
   },
-  // Slack and Notion disabled — Slack requires full OAuth, Notion requires app registration
-  // slack: { ... },
+  slack: {
+    label: "Slack",
+    colorVar: '--slack',
+    helper: 'Paste a user token from your Slack app install, or use a refresh token below.',
+    placeholder: "xoxp-...",
+    hasTokenExchange: true,
+  },
+  // Notion disabled — requires app registration
   // notion: { ... },
 };
 
@@ -730,7 +736,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   };
 
   // Inject robot SVGs into "coming soon" placeholders from template
-  for (const id of ['slack-coming-soon', 'notion-coming-soon']) {
+  for (const id of ['notion-coming-soon']) {
     const el = document.getElementById(id);
     if (el) el.prepend(cloneRobotSvg());
   }
@@ -981,7 +987,7 @@ function switchView(view) {
   // Hide date controls + period tabs on Trends/coming-soon tabs
   const dateNav = document.querySelector('.date-nav');
   const tabBar = document.getElementById('tab-bar');
-  const hideDateControls = view === 'trends' || view === 'slack' || view === 'notion';
+  const hideDateControls = view === 'trends' || view === 'notion';
   if (hideDateControls) {
     if (dateNav) { dateNav.style.visibility = 'hidden'; dateNav.style.pointerEvents = 'none'; }
     if (tabBar) { tabBar.style.visibility = 'hidden'; tabBar.style.pointerEvents = 'none'; }
@@ -992,7 +998,7 @@ function switchView(view) {
   // Edit layout only applies to overview
   dom.actionEditLayout.style.display = view === 'overview' ? '' : 'none';
   // Load data (skip for coming-soon views)
-  if (view !== 'slack' && view !== 'notion') loadViewData(view);
+  if (view !== 'notion') loadViewData(view);
 }
 
 function loadViewData(view) {
@@ -1048,7 +1054,7 @@ function renderSourceView(view) {
   const activities = state.digest?.activities || [];
 
   // Show "not connected" placeholder if the integration is disconnected
-  const checks = { github: 'GitHub', linear: 'Linear' };
+  const checks = { github: 'GitHub', linear: 'Linear', slack: 'Slack' };
   if (checks[view] && !state.authStatus[view]) {
     const section = document.getElementById(`view-${view}`);
     if (section) {
