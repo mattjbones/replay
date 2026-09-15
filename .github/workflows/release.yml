@@ -154,11 +154,19 @@ jobs:
           body: |
             ## Installation
 
+            **Recommended** (no Gatekeeper prompt; also sets up the background daemon and Claude Code MCP server):
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/mattjbones/replay/main/scripts/install.sh | bash
+            ```
+
+            Or download directly:
+
             | Architecture | Download |
             |---|---|
             | Apple Silicon (M1/M2/M3/M4) | [Recap_aarch64.dmg](https://github.com/mattjbones/replay/releases/download/v${{ inputs.version }}/Recap_aarch64.dmg) |
 
-            > **Note:** This app is not notarized with Apple. On first launch, right-click the app and select "Open", then confirm in the dialog.
+            > **Note:** This app is not notarized with Apple. A browser-downloaded DMG will be blocked on first launch: open **System Settings → Privacy & Security** and click **Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/Recap.app`.
 
             Existing installations will be prompted to auto-update on next launch.
           files: |
