@@ -89,9 +89,18 @@ impl AuthManager {
         crate::config::AppConfig::db_path()
     }
 
-    fn db_get(key: &str) -> Result<Option<String>, String> {
+    /// Open a connection with WAL mode and a busy timeout so concurrent
+    /// access from the daemon and the app doesn't produce SQLITE_BUSY.
+    fn open_conn() -> Result<rusqlite::Connection, String> {
         let conn = rusqlite::Connection::open(Self::db_path())
             .map_err(|e| e.to_string())?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+            .map_err(|e| e.to_string())?;
+        Ok(conn)
+    }
+
+    fn db_get(key: &str) -> Result<Option<String>, String> {
+        let conn = Self::open_conn()?;
         let mut stmt = conn
             .prepare("SELECT value FROM tokens WHERE key = ?1")
             .map_err(|e| e.to_string())?;
@@ -102,8 +111,7 @@ impl AuthManager {
     }
 
     fn db_set(key: &str, value: &str) -> Result<(), String> {
-        let conn = rusqlite::Connection::open(Self::db_path())
-            .map_err(|e| e.to_string())?;
+        let conn = Self::open_conn()?;
         conn.execute(
             "INSERT OR REPLACE INTO tokens (key, value) VALUES (?1, ?2)",
             rusqlite::params![key, value],
@@ -113,8 +121,7 @@ impl AuthManager {
     }
 
     fn db_delete(key: &str) -> Result<(), String> {
-        let conn = rusqlite::Connection::open(Self::db_path())
-            .map_err(|e| e.to_string())?;
+        let conn = Self::open_conn()?;
         conn.execute("DELETE FROM tokens WHERE key = ?1", rusqlite::params![key])
             .map_err(|e| e.to_string())?;
         Ok(())
