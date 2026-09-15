@@ -458,9 +458,9 @@ impl GitHubIntegration {
             title: String,
             html_url: String,
             repo_name: String,
-            updated_str: String,
-            merged_at_present: bool,
             state: String,
+            merged_at: Option<DateTime<Utc>>,
+            updated_at: Option<DateTime<Utc>>,
         }
 
         let mut candidates: Vec<PrCandidate> = Vec::new();
@@ -471,22 +471,20 @@ impl GitHubIntegration {
             let state = item["state"].as_str().unwrap_or_default().to_string();
             let repo_url = item["repository_url"].as_str().unwrap_or_default();
             let repo_name = repo_name_from_url(repo_url);
-            let updated_str = item["updated_at"].as_str().unwrap_or_default().to_string();
-            let merged_at_present = item["pull_request"]
-                .get("merged_at")
-                .and_then(|v| v.as_str())
-                .is_some();
+            let merged_at = parse_datetime(item["pull_request"].get("merged_at"));
+            let updated_at = parse_datetime(item.get("updated_at"));
 
-            candidates.push(PrCandidate { number, title, html_url, repo_name, updated_str, merged_at_present, state });
+            candidates.push(PrCandidate { number, title, html_url, repo_name, state, merged_at, updated_at });
         }
 
-        // Second pass: check closed PRs for Graphite merges in parallel (cap at 20)
+        // Second pass: check closed-unmerged PRs for Graphite merges in parallel (cap at 20)
         let closed_prs: Vec<&PrCandidate> = candidates.iter()
-            .filter(|c| c.state == "closed" && !c.merged_at_present)
+            .filter(|c| c.state == "closed" && c.merged_at.is_none())
             .take(20)
             .collect();
 
-        let mut graphite_merged: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut graphite_closed: std::collections::HashMap<u64, DateTime<Utc>> =
+            std::collections::HashMap::new();
 
         if !closed_prs.is_empty() {
             tracing::info!("github: checking {} closed PRs for Graphite merges in parallel", closed_prs.len());
@@ -496,14 +494,14 @@ impl GitHubIntegration {
                 let repo = c.repo_name.clone();
                 let number = c.number;
                 join_set.spawn(async move {
-                    let merged = check_graphite_merge_static(&client, &repo, number).await;
-                    (number, merged)
+                    let closed_at = fetch_graphite_merge_time(&client, &repo, number).await;
+                    (number, closed_at)
                 });
             }
             while let Some(result) = join_set.join_next().await {
-                if let Ok((number, true)) = result {
-                    tracing::info!("github: PR #{number} detected as Graphite merge");
-                    graphite_merged.insert(number);
+                if let Ok((number, Some(closed_at))) = result {
+                    tracing::info!("github: PR #{number} detected as Graphite merge at {closed_at}");
+                    graphite_closed.insert(number, closed_at);
                 }
             }
         }
@@ -511,19 +509,14 @@ impl GitHubIntegration {
         // Third pass: build activities
         let mut activities = Vec::new();
         for c in &candidates {
-            let kind = if c.merged_at_present {
-                ActivityKind::PrMerged
-            } else if c.state == "open" {
-                ActivityKind::PrOpened
-            } else if c.state == "closed" && graphite_merged.contains(&c.number) {
-                ActivityKind::PrMerged
-            } else {
+            let Some((kind, occurred_at)) = classify_authored_pr(
+                &c.state,
+                c.merged_at,
+                graphite_closed.get(&c.number).copied(),
+                c.updated_at,
+            ) else {
                 continue;
             };
-
-            let occurred_at: DateTime<Utc> = c.updated_str
-                .parse()
-                .unwrap_or_else(|_| Utc::now());
 
             let source_id = format!("pr:{}:{}", c.repo_name, c.number);
             let (cc_type, cc_scope) = parse_conventional_commit(&c.title);
@@ -669,60 +662,91 @@ impl GitHubIntegration {
         tracing::info!("github: found {} involved issues via search", activities.len());
         Ok(activities)
     }
+}
 
-    /// Check if a closed PR was actually merged via Graphite's merge queue.
-    /// Graphite closes the PR (without setting merged=true) and deletes the head branch.
-    /// If the head branch is gone (404), it was merged.
-    // Instance method kept for API compatibility, delegates to static
-    #[allow(dead_code)]
-    async fn check_graphite_merge(&self, repo: &str, pr_number: u64) -> bool {
-        check_graphite_merge_static(&self.client, repo, pr_number).await
+/// Parse an optional RFC 3339 timestamp from a JSON value.
+fn parse_datetime(value: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
+    value?.as_str()?.parse().ok()
+}
+
+/// Decide what activity (if any) an authored PR from the Search API represents,
+/// and when it happened.
+///
+/// - Natively merged PRs → `PrMerged` at `merged_at`.
+/// - Closed PRs that Graphite's merge queue closed → `PrMerged` at `closed_at`.
+/// - Open PRs → `PrOpened` at `updated_at` (unchanged behaviour).
+/// - Closed-unmerged PRs → nothing. Notably, a deleted head branch is *not*
+///   evidence of a merge: scheduled branch cleanups delete the branches of
+///   abandoned PRs months later, bumping `updated_at` in the process.
+fn classify_authored_pr(
+    state: &str,
+    merged_at: Option<DateTime<Utc>>,
+    graphite_closed_at: Option<DateTime<Utc>>,
+    updated_at: Option<DateTime<Utc>>,
+) -> Option<(ActivityKind, DateTime<Utc>)> {
+    let fallback = updated_at.unwrap_or_else(Utc::now);
+    if let Some(merged_at) = merged_at {
+        return Some((ActivityKind::PrMerged, merged_at));
+    }
+    match state {
+        "open" => Some((ActivityKind::PrOpened, fallback)),
+        "closed" => graphite_closed_at.map(|t| (ActivityKind::PrMerged, t)),
+        _ => None,
     }
 }
 
-/// Check if a closed PR was merged via Graphite's merge queue.
-/// Static function so it can be spawned into a JoinSet for parallel execution.
-async fn check_graphite_merge_static(client: &reqwest::Client, repo: &str, pr_number: u64) -> bool {
+/// Given a `GET /repos/{repo}/issues/{n}` payload for a closed PR, return the
+/// close time if Graphite's merge queue was the closer.
+///
+/// Graphite lands the stack on the base branch itself, then closes the PR as
+/// `graphite-app[bot]` rather than merging it through GitHub, so `merged` stays
+/// false. The closer's identity is the reliable signal; branch deletion is not.
+fn graphite_merge_time(issue: &serde_json::Value) -> Option<DateTime<Utc>> {
+    if let Some(merged_at) = parse_datetime(issue["pull_request"].get("merged_at")) {
+        return Some(merged_at);
+    }
+    let closed_by = &issue["closed_by"];
+    let is_bot = closed_by["type"].as_str() == Some("Bot");
+    let is_graphite = closed_by["login"]
+        .as_str()
+        .map(|l| l.to_ascii_lowercase().starts_with("graphite"))
+        .unwrap_or(false);
+    if is_bot && is_graphite {
+        parse_datetime(issue.get("closed_at"))
+    } else {
+        None
+    }
+}
+
+/// Fetch a closed PR's issue record and return its close time if it was
+/// merged via Graphite's merge queue. Static so it can be spawned into a JoinSet.
+async fn fetch_graphite_merge_time(
+    client: &reqwest::Client,
+    repo: &str,
+    pr_number: u64,
+) -> Option<DateTime<Utc>> {
     tracing::debug!("github: checking if PR #{pr_number} in {repo} was Graphite-merged");
-    let url = format!("https://api.github.com/repos/{repo}/pulls/{pr_number}");
+    let url = format!("https://api.github.com/repos/{repo}/issues/{pr_number}");
     let context = format!("check graphite merge PR #{pr_number}");
     let resp = match rate_limited_get(client, &url, &context).await {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("github: failed to fetch PR #{pr_number}: {e}");
-            return false;
+            return None;
         }
     };
     if !resp.status().is_success() {
         tracing::warn!("github: PR #{pr_number} returned {}", resp.status());
-        return false;
+        return None;
     }
-    let json: serde_json::Value = match resp.json().await {
-        Ok(j) => j,
-        Err(_) => return false,
-    };
-
-    // If the Pulls API says merged, trust it
-    if json.get("merged").and_then(|v| v.as_bool()) == Some(true) {
-        tracing::info!("github: PR #{pr_number} — Pulls API says merged=true");
-        return true;
-    }
-
-    // Check if head branch was deleted (Graphite deletes after merge)
-    let head_ref = match json["head"]["ref"].as_str() {
-        Some(r) => r,
-        None => return false,
-    };
-    let branch_url = format!("https://api.github.com/repos/{repo}/git/ref/heads/{head_ref}");
-    let branch_context = format!("check branch ref for PR #{pr_number}");
-    let branch_deleted = match rate_limited_get(client, &branch_url, &branch_context).await {
-        Ok(r) => r.status() == reqwest::StatusCode::NOT_FOUND,
-        Err(_) => false,
-    };
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let result = graphite_merge_time(&json);
     tracing::info!(
-        "github: PR #{pr_number} — merged=false, branch '{head_ref}' deleted={branch_deleted}",
+        "github: PR #{pr_number} — closed_by={} graphite_merged={}",
+        json["closed_by"]["login"].as_str().unwrap_or("?"),
+        result.is_some(),
     );
-    branch_deleted
+    result
 }
 
 /// Parse a conventional commit prefix from a PR title.
@@ -1143,4 +1167,97 @@ pub async fn fetch_github_issues(config: &crate::config::AppConfig) -> Result<Ve
     }
 
     Ok(issues)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn ts(s: &str) -> DateTime<Utc> {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn native_merge_is_pr_merged_at_merged_at() {
+        let merged = ts("2026-09-15T09:37:53Z");
+        let updated = ts("2026-09-15T09:37:54Z");
+        assert_eq!(
+            classify_authored_pr("closed", Some(merged), None, Some(updated)),
+            Some((ActivityKind::PrMerged, merged))
+        );
+    }
+
+    #[test]
+    fn graphite_closed_is_pr_merged_at_closed_at() {
+        let closed = ts("2026-06-25T15:55:28Z");
+        let updated = ts("2026-09-13T00:49:52Z");
+        assert_eq!(
+            classify_authored_pr("closed", None, Some(closed), Some(updated)),
+            Some((ActivityKind::PrMerged, closed))
+        );
+    }
+
+    #[test]
+    fn human_closed_unmerged_pr_is_dropped() {
+        // Abandoned PR whose branch was swept by a cleanup job months later.
+        let updated = ts("2026-09-15T00:45:21Z");
+        assert_eq!(classify_authored_pr("closed", None, None, Some(updated)), None);
+    }
+
+    #[test]
+    fn open_pr_keeps_updated_at() {
+        let updated = ts("2026-09-14T17:20:15Z");
+        assert_eq!(
+            classify_authored_pr("open", None, None, Some(updated)),
+            Some((ActivityKind::PrOpened, updated))
+        );
+    }
+
+    #[test]
+    fn graphite_bot_closer_counts_as_merge() {
+        let issue = json!({
+            "state": "closed",
+            "closed_at": "2026-06-25T15:55:28Z",
+            "closed_by": { "login": "graphite-app[bot]", "type": "Bot" },
+            "pull_request": { "merged_at": null }
+        });
+        assert_eq!(graphite_merge_time(&issue), Some(ts("2026-06-25T15:55:28Z")));
+    }
+
+    #[test]
+    fn human_closer_with_deleted_branch_is_not_a_merge() {
+        // Shape of LupaPets/lupa#18101: closed by the author in July,
+        // branch deleted by github-actions[bot] in September.
+        let issue = json!({
+            "state": "closed",
+            "closed_at": "2026-07-08T16:34:21Z",
+            "updated_at": "2026-09-15T00:45:21Z",
+            "closed_by": { "login": "mhardingjones-lupa", "type": "User" },
+            "pull_request": { "merged_at": null }
+        });
+        assert_eq!(graphite_merge_time(&issue), None);
+    }
+
+    #[test]
+    fn other_bot_closer_is_not_a_merge() {
+        let issue = json!({
+            "state": "closed",
+            "closed_at": "2026-07-08T16:34:21Z",
+            "closed_by": { "login": "github-actions[bot]", "type": "Bot" },
+            "pull_request": { "merged_at": null }
+        });
+        assert_eq!(graphite_merge_time(&issue), None);
+    }
+
+    #[test]
+    fn issue_payload_merged_at_short_circuits() {
+        let issue = json!({
+            "state": "closed",
+            "closed_at": "2026-09-15T09:37:54Z",
+            "closed_by": { "login": "mhardingjones-lupa", "type": "User" },
+            "pull_request": { "merged_at": "2026-09-15T09:37:53Z" }
+        });
+        assert_eq!(graphite_merge_time(&issue), Some(ts("2026-09-15T09:37:53Z")));
+    }
 }
