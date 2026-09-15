@@ -39,8 +39,8 @@ impl AuthManager {
         AuthStatus {
             github: has_token(&Source::GitHub),
             linear: has_token(&Source::Linear),
-            slack: true,  // Slack disabled — requires full OAuth
-            notion: true, // Notion disabled
+            slack: has_token(&Source::Slack),
+            notion: has_token(&Source::Notion),
             anthropic: Self::get_anthropic_key().ok().flatten().is_some(),
         }
     }
