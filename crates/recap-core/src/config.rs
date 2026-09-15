@@ -300,9 +300,8 @@ fn default_llm_model() -> String {
     "claude-haiku-4-5-20251001".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-#[derive(Default)]
 pub enum LlmProfile {
     #[default]
     Work,

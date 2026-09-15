@@ -93,3 +93,21 @@ fn llm_profile_enum_serialization() {
     let json = serde_json::to_string(&personal).unwrap();
     assert_eq!(json, r#""personal""#);
 }
+
+#[test]
+fn llm_profile_deserializes_from_toml_and_defaults_to_work() {
+    use recap_core::config::{LlmConfig, LlmProfile};
+
+    let personal: LlmConfig = toml::from_str(r#"profile = "personal""#).unwrap();
+    assert_eq!(personal.profile, LlmProfile::Personal);
+
+    let work: LlmConfig = toml::from_str(r#"profile = "work""#).unwrap();
+    assert_eq!(work.profile, LlmProfile::Work);
+
+    // Omitted → default.
+    let defaulted: LlmConfig = toml::from_str("").unwrap();
+    assert_eq!(defaulted.profile, LlmProfile::Work);
+
+    // Wrong case is rejected rather than silently accepted.
+    assert!(toml::from_str::<LlmConfig>(r#"profile = "Personal""#).is_err());
+}
