@@ -46,3 +46,39 @@ pub fn parse_period_range(
         other => Err(format!("unknown period: {other} (expected day, week, or month)")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn day_range_is_one_utc_day() {
+        let (period, start, end) = parse_period_range("day", Some("2026-09-15")).unwrap();
+        assert_eq!(period, Period::Day(NaiveDate::from_ymd_opt(2026, 9, 15).unwrap()));
+        assert_eq!(start.to_rfc3339(), "2026-09-15T00:00:00+00:00");
+        assert_eq!(end - start, chrono::Duration::days(1));
+    }
+
+    #[test]
+    fn week_starts_on_monday() {
+        // 2026-09-17 is a Thursday; the week should start Monday 2026-09-14.
+        let (period, start, end) = parse_period_range("week", Some("2026-09-17")).unwrap();
+        assert_eq!(period, Period::Week(NaiveDate::from_ymd_opt(2026, 9, 14).unwrap()));
+        assert_eq!(start.to_rfc3339(), "2026-09-14T00:00:00+00:00");
+        assert_eq!(end - start, chrono::Duration::weeks(1));
+    }
+
+    #[test]
+    fn month_wraps_year_in_december() {
+        let (period, start, end) = parse_period_range("month", Some("2025-12-15")).unwrap();
+        assert_eq!(period, Period::Month(NaiveDate::from_ymd_opt(2025, 12, 1).unwrap()));
+        assert_eq!(start.to_rfc3339(), "2025-12-01T00:00:00+00:00");
+        assert_eq!(end.to_rfc3339(), "2026-01-01T00:00:00+00:00");
+    }
+
+    #[test]
+    fn rejects_unknown_period_and_bad_date() {
+        assert!(parse_period_range("year", None).is_err());
+        assert!(parse_period_range("day", Some("15/09/2026")).is_err());
+    }
+}

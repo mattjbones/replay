@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use chrono::{Datelike, NaiveTime, TimeZone, Utc};
 use rmcp::{
     ErrorData as McpError,
     model::*,
@@ -9,6 +8,7 @@ use rmcp::{
 use recap_core::auth::AuthManager;
 use recap_core::config::AppConfig;
 use recap_core::db::Database;
+use recap_core::time::parse_period_range;
 
 /// Build the list of static resources exposed by this server.
 pub fn list() -> Vec<Resource> {
@@ -27,7 +27,7 @@ pub fn list() -> Vec<Resource> {
         ),
         Resource::new(
             RawResource::new("recap://status", "status")
-                .with_description("Current auth and sync status")
+                .with_description("Current integration auth status")
                 .with_mime_type("application/json"),
             None,
         ),
@@ -52,42 +52,23 @@ pub fn read(
 }
 
 fn read_digest_today(uri: &str, db: &Arc<Database>) -> Result<ReadResourceResult, McpError> {
-    let today = Utc::now().date_naive();
-    let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
-    let start = Utc.from_utc_datetime(&today.and_time(midnight));
-    let end = start + chrono::Duration::days(1);
-
-    let activities = recap_core::db::get_activities_for_range(db, start, end)
-        .map_err(|e| McpError::internal_error(format!("db error: {e}"), None))?;
-
-    let digest = recap_core::digest::build_digest(
-        activities,
-        recap_core::models::Period::Day(today),
-    );
-
-    let json = serde_json::to_string_pretty(&digest)
-        .map_err(|e| McpError::internal_error(format!("serialization error: {e}"), None))?;
-
-    Ok(ReadResourceResult::new(vec![
-        ResourceContents::text(json, uri).with_mime_type("application/json"),
-    ]))
+    read_digest(uri, db, "day")
 }
 
 fn read_digest_week(uri: &str, db: &Arc<Database>) -> Result<ReadResourceResult, McpError> {
-    let today = Utc::now().date_naive();
-    let weekday = today.weekday().num_days_from_monday();
-    let week_start = today - chrono::Duration::days(weekday as i64);
-    let midnight = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
-    let start = Utc.from_utc_datetime(&week_start.and_time(midnight));
-    let end = start + chrono::Duration::weeks(1);
+    read_digest(uri, db, "week")
+}
+
+/// Shared with the `get_digest` tool via `parse_period_range`, so day/week
+/// boundaries cannot drift between tools and resources.
+fn read_digest(uri: &str, db: &Arc<Database>, period: &str) -> Result<ReadResourceResult, McpError> {
+    let (period, start, end) = parse_period_range(period, None)
+        .map_err(|e| McpError::internal_error(e, None))?;
 
     let activities = recap_core::db::get_activities_for_range(db, start, end)
         .map_err(|e| McpError::internal_error(format!("db error: {e}"), None))?;
 
-    let digest = recap_core::digest::build_digest(
-        activities,
-        recap_core::models::Period::Week(week_start),
-    );
+    let digest = recap_core::digest::build_digest(activities, period);
 
     let json = serde_json::to_string_pretty(&digest)
         .map_err(|e| McpError::internal_error(format!("serialization error: {e}"), None))?;

@@ -11,7 +11,6 @@ clap = { version = "4", features = ["derive"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-schemars = "0.8"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }

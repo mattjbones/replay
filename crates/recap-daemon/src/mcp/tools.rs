@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::Utc;
 use rmcp::{
@@ -9,7 +10,7 @@ use rmcp::{
     service::RequestContext,
     tool, tool_handler, tool_router,
 };
-use schemars::JsonSchema;
+use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use recap_core::config::AppConfig;
@@ -102,6 +103,9 @@ struct CycleTimeWeek {
 pub struct RecapServer {
     db: Arc<Database>,
     config: AppConfig,
+    /// When `trigger_sync` last *attempted* a pass, successful or not.
+    /// Serialised through a mutex so concurrent calls cannot both pass the cooldown.
+    last_sync_attempt: Arc<tokio::sync::Mutex<Option<Instant>>>,
     tool_router: rmcp::handler::server::router::tool::ToolRouter<Self>,
 }
 
@@ -110,6 +114,7 @@ impl RecapServer {
         Self {
             db,
             config,
+            last_sync_attempt: Arc::new(tokio::sync::Mutex::new(None)),
             tool_router: Self::tool_router(),
         }
     }
@@ -256,9 +261,12 @@ impl RecapServer {
     /// Trigger an immediate sync pass.
     #[tool(description = "Trigger an immediate sync pass across all connected integrations.")]
     async fn trigger_sync(&self) -> Result<CallToolResult, McpError> {
-        // Enforce a cooldown so MCP clients cannot spam syncs.
-        if let Some(last) = recap_core::db::get_latest_sync_time(&self.db) {
-            let elapsed = Utc::now().signed_duration_since(last).num_seconds();
+        // Cooldown is keyed on the last *attempt*, held in-process. Keying on
+        // `sync_cursors.last_sync` never binds on a fresh DB or when every
+        // integration is failing, since that column only advances on success.
+        let mut last_attempt = self.last_sync_attempt.lock().await;
+        if let Some(last) = *last_attempt {
+            let elapsed = last.elapsed().as_secs() as i64;
             if elapsed < SYNC_COOLDOWN_SECS {
                 let remaining = SYNC_COOLDOWN_SECS - elapsed;
                 return Ok(CallToolResult::success(vec![Content::text(
@@ -266,17 +274,30 @@ impl RecapServer {
                 )]));
             }
         }
+        *last_attempt = Some(Instant::now());
+
+        let before = recap_core::db::get_latest_sync_time(&self.db);
         let scheduler = recap_core::sync::SyncScheduler::new(
             Arc::clone(&self.db),
             self.config.clone(),
         );
         scheduler.run_once().await;
-        recap_core::db::invalidate_all_summaries(&self.db);
-        Ok(CallToolResult::success(vec![Content::text("sync complete")]))
+        let after = recap_core::db::get_latest_sync_time(&self.db);
+
+        // Only throw away cached LLM summaries if a source actually advanced;
+        // run_once itself skips sources whose data is still within the hot TTL.
+        if after > before {
+            recap_core::db::invalidate_all_summaries(&self.db);
+            Ok(CallToolResult::success(vec![Content::text("sync complete: new data fetched")]))
+        } else {
+            Ok(CallToolResult::success(vec![Content::text(
+                "sync complete: all sources already fresh, nothing fetched",
+            )]))
+        }
     }
 
     /// Search activities by text query.
-    #[tool(description = "Search activities by text query (matches against title and description).")]
+    #[tool(description = "Substring search over activity title and description (case-insensitive LIKE, not full-text). Returns up to 100 most recent matches.")]
     async fn search_activities(
         &self,
         params: Parameters<SearchParams>,

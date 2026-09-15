@@ -378,7 +378,8 @@ pub fn get_all_activities(db: &Database) -> rusqlite::Result<Vec<Activity>> {
     rows.collect()
 }
 
-/// Full-text search across activity title and description columns using SQL LIKE.
+/// Substring search across activity title and description using SQL LIKE
+/// (full table scan, no FTS index; SQLite LIKE is case-insensitive for ASCII only).
 /// Returns up to 100 matching activities ordered by occurred_at DESC.
 pub fn search_activities(db: &Database, query: &str) -> rusqlite::Result<Vec<Activity>> {
     let conn = db.conn.lock().map_err(|e| {

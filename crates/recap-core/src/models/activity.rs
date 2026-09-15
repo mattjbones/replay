@@ -119,7 +119,7 @@ impl Activity {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Period {
     Day(chrono::NaiveDate),
     Week(chrono::NaiveDate), // start of week
