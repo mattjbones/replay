@@ -339,15 +339,30 @@
 
     <!-- View: Slack -->
     <section id="view-slack" class="view-section" style="display:none">
-      <div class="coming-soon-view">
-        <div class="coming-soon-content" id="slack-coming-soon">
-          <div class="coming-soon-text">
-            <h2>Slack Integration</h2>
-            <p class="coming-soon-badge">Coming Soon</p>
-            <p class="coming-soon-desc">Full Slack integration with OAuth support is on its way. You'll be able to view channel activity, messages, and team communications right here.</p>
+      <div class="source-view">
+        <div class="source-stats-row" id="slack-stats"></div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-label">Channels</span>
+          </div>
+          <div class="slack-channels-grid" id="slack-channels"></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-label">Messages</span>
+            <span id="slack-message-count" class="activity-count"></span>
+          </div>
+          <div class="activity-table-wrapper" style="max-height:600px">
+            <table class="activity-table">
+              <thead><tr>
+                <th style="width:140px">Channel</th><th>Message</th><th style="width:90px">Type</th><th style="width:80px">Time</th>
+              </tr></thead>
+              <tbody id="slack-message-tbody"></tbody>
+            </table>
           </div>
         </div>
       </div>
+      <div class="disconnected-overlay" style="display:none"></div>
     </section>
 
     <!-- View: Notion -->
