@@ -2,13 +2,17 @@
 name = "recap-daemon"
 version.workspace = true
 edition.workspace = true
-description = "Recap — headless background sync daemon with launchd integration"
+description = "Recap — headless background sync daemon and MCP server"
 
 [dependencies]
 recap-core = { workspace = true }
+rmcp = { version = "1.2", features = ["server", "transport-io", "macros"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-anyhow = "1"
+chrono = { workspace = true }
+anyhow = { workspace = true }
 dirs = { workspace = true }
