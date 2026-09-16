@@ -23,6 +23,24 @@ pub struct AppState {
     pub config: std::sync::Mutex<AppConfig>,
 }
 
+/// Drops activities the configured GitHub workflow says aren't worth showing
+/// (raw commits under a PR-based workflow, or PR events under a trunk-based one) --
+/// applied everywhere activities feed a chart, total, or AI-generated summary.
+fn filter_by_workflow(mut activities: Vec<Activity>, config: &AppConfig) -> Vec<Activity> {
+    activities.retain(|a| !config.github.workflow.excludes_kind(&a.kind.to_string()));
+    activities
+}
+
+/// Same filter for the (period_label, kind, count) rows returned by the raw SQL
+/// aggregation queries (weekly velocity, daily vectors) used on the Trends tab.
+fn filter_kind_rows_by_workflow<T>(
+    mut rows: Vec<(T, String, i64)>,
+    config: &AppConfig,
+) -> Vec<(T, String, i64)> {
+    rows.retain(|(_, kind, _)| !config.github.workflow.excludes_kind(kind));
+    rows
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -34,8 +52,10 @@ pub async fn get_digest(
     date: Option<String>,
 ) -> Result<Digest, String> {
     let (p, start, end) = parse_period_range(&period, date.as_deref())?;
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
     let activities =
         get_activities_for_range(&state.db, start, end).map_err(|e: rusqlite::Error| e.to_string())?;
+    let activities = filter_by_workflow(activities, &config);
     Ok(build_digest(activities, p))
 }
 
@@ -173,6 +193,9 @@ pub async fn update_config(
 ) -> Result<(), String> {
     config.save();
     *state.config.lock().map_err(|e| e.to_string())? = config;
+    // Invalidate cached AI summaries -- settings like github.workflow change what
+    // activities feed the prompt, so a stale cached summary could contradict them.
+    invalidate_all_summaries(&state.db);
     Ok(())
 }
 
@@ -202,6 +225,7 @@ pub async fn get_llm_summary(
     // Fetch activities for the range.
     let activities =
         get_activities_for_range(&state.db, start, end).map_err(|e: rusqlite::Error| e.to_string())?;
+    let activities = filter_by_workflow(activities, &config);
 
     if activities.is_empty() {
         return Ok(None);
@@ -235,8 +259,10 @@ pub async fn get_chart_data(
     date: Option<String>,
 ) -> Result<ChartData, String> {
     let (_p, start, end) = parse_period_range(&period, date.as_deref())?;
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
     let activities =
         get_activities_for_range(&state.db, start, end).map_err(|e| e.to_string())?;
+    let activities = filter_by_workflow(activities, &config);
 
     // Build day-by-day buckets
     let mut labels = Vec::new();
@@ -301,8 +327,10 @@ pub async fn get_feature_breakdown(
     date: Option<String>,
 ) -> Result<Vec<FeatureBreakdown>, String> {
     let (_p, start, end) = parse_period_range(&period, date.as_deref())?;
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
     let activities =
         get_activities_for_range(&state.db, start, end).map_err(|e| e.to_string())?;
+    let activities = filter_by_workflow(activities, &config);
 
     let mut projects: HashMap<String, HashMap<String, usize>> = HashMap::new();
 
@@ -352,6 +380,7 @@ pub async fn get_standup(
 
     let today_activities =
         get_activities_for_range(&state.db, today_start, today_end).map_err(|e| e.to_string())?;
+    let today_activities = filter_by_workflow(today_activities, &config);
 
     // Fetch open Linear tickets (urgent + high priority only) and open GitHub PRs
     let (open_tickets, open_prs) = tokio::join!(
@@ -836,13 +865,16 @@ pub async fn get_trends_data(
 
     // Run all queries
     let velocity_rows = query_weekly_velocity(&state.db, since).map_err(|e| e.to_string())?;
+    let velocity_rows = filter_kind_rows_by_workflow(velocity_rows, &config);
     let heatmap_rows = query_activity_heatmap(&state.db, since).map_err(|e| e.to_string())?;
     let cycle_rows = query_cycle_times(&state.db, since).map_err(|e| e.to_string())?;
     let project_rows = query_project_distribution(&state.db, since).map_err(|e| e.to_string())?;
     let burnout_activities = get_activities_for_range(&state.db, since, now).map_err(|e| e.to_string())?;
+    let burnout_activities = filter_by_workflow(burnout_activities, &config);
     let offhours_rows = build_off_hours_rows(&burnout_activities, &config.working_hours);
     let msg_rows = query_message_volume(&state.db, since).map_err(|e| e.to_string())?;
     let daily_rows = query_daily_vectors(&state.db, since).map_err(|e| e.to_string())?;
+    let daily_rows = filter_kind_rows_by_workflow(daily_rows, &config);
     let dow_proj_rows = query_dow_project(&state.db, since).map_err(|e| e.to_string())?;
 
     // --- Velocity ---
