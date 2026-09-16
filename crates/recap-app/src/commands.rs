@@ -593,12 +593,16 @@ pub struct AnomalyWeek {
 pub struct DayClusterData {
     pub clusters: Vec<DayCluster>,
     pub days: Vec<ClassifiedDay>,
+    /// Labels for each `DayCluster.centroid` position, in order -- the set of
+    /// tracked dimensions varies with `github.workflow` (see `excludes_kind`),
+    /// so callers must not assume a fixed 5-element layout.
+    pub dimensions: Vec<String>,
 }
 
 #[derive(Serialize)]
 pub struct DayCluster {
     pub name: String,
-    pub centroid: Vec<f64>,  // [commits, prs, reviews, issues, messages]
+    pub centroid: Vec<f64>,
     pub count: usize,
 }
 
@@ -1016,7 +1020,19 @@ pub async fn get_trends_data(
     };
 
     // --- Day Clustering (K-means, k=3) ---
-    let cluster_kinds = ["commit_pushed", "pr_merged", "pr_reviewed", "issue_completed", "message_sent"];
+    // Kind/label pairs stay index-aligned; drop the workflow-excluded kind from both so it
+    // can never end up dominant (and never appears as a tooltip label) under either mode.
+    let (cluster_kinds, dim_names): (Vec<&str>, Vec<&str>) = [
+        ("commit_pushed", "Coding"),
+        ("pr_merged", "PRs"),
+        ("pr_reviewed", "Reviews"),
+        ("issue_completed", "Issues"),
+        ("message_sent", "Comms"),
+    ]
+        .into_iter()
+        .filter(|(kind, _)| !config.github.workflow.excludes_kind(kind))
+        .unzip();
+
     let mut day_set: Vec<String> = daily_rows.iter().map(|(d, _, _)| d.clone()).collect();
     day_set.sort();
     day_set.dedup();
@@ -1033,7 +1049,6 @@ pub async fn get_trends_data(
     let (assignments, centroids) = kmeans(&data_points, 3, 20);
 
     // Name clusters by dominant dimension
-    let dim_names = ["Coding", "PRs", "Reviews", "Issues", "Comms"];
     let clusters: Vec<DayCluster> = centroids.iter().enumerate().map(|(i, c)| {
         let dominant = c.iter().enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
@@ -1052,7 +1067,11 @@ pub async fn get_trends_data(
         }
     }).collect();
 
-    let day_clusters = DayClusterData { clusters, days };
+    let day_clusters = DayClusterData {
+        clusters,
+        days,
+        dimensions: dim_names.iter().map(|s| s.to_string()).collect(),
+    };
 
     // --- Project Prediction (Naive Bayes: P(project | tomorrow's dow)) ---
     let tomorrow_dow = (Utc::now() + chrono::Duration::days(1))
