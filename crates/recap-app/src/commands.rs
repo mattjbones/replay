@@ -878,7 +878,14 @@ pub async fn get_trends_data(
     let dow_proj_rows = query_dow_project(&state.db, since).map_err(|e| e.to_string())?;
 
     // --- Velocity ---
-    let key_kinds = ["pr_merged", "issue_completed", "commit_pushed", "pr_reviewed"];
+    // commit_pushed/pr_* are mutually exclusive signals depending on workflow (see
+    // GitHubWorkflow::excludes_kind) -- drop the irrelevant one as a tracked metric
+    // entirely, not just its data, so it never appears as a flat-zero series for
+    // anomaly detection or the AI summary to comment on.
+    let key_kinds: Vec<&str> = ["pr_merged", "issue_completed", "commit_pushed", "pr_reviewed"]
+        .into_iter()
+        .filter(|k| !config.github.workflow.excludes_kind(k))
+        .collect();
     let mut week_set: Vec<String> = velocity_rows.iter().map(|(w, _, _)| w.clone()).collect();
     week_set.sort();
     week_set.dedup();
