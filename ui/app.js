@@ -1,3 +1,13 @@
+// ===== Native Context Menu =====
+
+// macOS's WKWebView auto-injects "Photos"/"Continuity Camera" entries into the
+// native right-click menu for any editable text field, and just building that
+// menu can trigger a Photo Library permission prompt -- Recap never inserts
+// media into a field, so suppress the native menu entirely. Keyboard shortcuts
+// (Cmd+C/Cmd+V/Cmd+X) are handled by the OS text field directly and are
+// unaffected by this.
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
 // ===== Tauri IPC Helper =====
 
 async function invoke(cmd, args = {}) {
