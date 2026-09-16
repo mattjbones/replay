@@ -29,33 +29,12 @@ pub fn upsert_activity(db: &Database, activity: &Activity) -> rusqlite::Result<(
     Ok(())
 }
 
-/// Maximum number of activities to load in a single query.
-const ACTIVITY_LIMIT: u32 = 500;
-
 /// Returns activities whose `occurred_at` falls within [start, end), ordered by occurred_at DESC.
-/// Limited to ACTIVITY_LIMIT rows to cap memory usage.
+///
+/// Callers always pass an inherently time-boxed range (a day/week/month period), so this is
+/// unbounded on row count — a fixed LIMIT here previously caused high-volume sources (e.g. Slack)
+/// to silently push older-but-still-in-range activities from other sources out of the result.
 pub fn get_activities_for_range(
-    db: &Database,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-) -> rusqlite::Result<Vec<Activity>> {
-    let conn = db.conn.lock().unwrap();
-    let mut stmt = conn.prepare(
-        "SELECT id, source, source_id, kind, title, description, url, project, occurred_at, metadata, synced_at
-         FROM activities
-         WHERE occurred_at >= ?1 AND occurred_at < ?2
-         ORDER BY occurred_at DESC
-         LIMIT ?3",
-    )?;
-
-    let rows = stmt.query_map(params![start.to_rfc3339(), end.to_rfc3339(), ACTIVITY_LIMIT], row_to_activity)?;
-
-    rows.collect()
-}
-
-/// Returns all activities whose `occurred_at` falls within [start, end), ordered by occurred_at DESC.
-/// Used by rollups that need complete aggregates (for example burnout over multiple weeks).
-pub fn get_activities_for_range_unlimited(
     db: &Database,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -74,7 +53,6 @@ pub fn get_activities_for_range_unlimited(
 }
 
 /// Returns activities for a specific source within a time range, ordered by occurred_at DESC.
-/// Limited to ACTIVITY_LIMIT rows to cap memory usage.
 pub fn get_activities_by_source(
     db: &Database,
     source: &Source,
@@ -86,12 +64,11 @@ pub fn get_activities_by_source(
         "SELECT id, source, source_id, kind, title, description, url, project, occurred_at, metadata, synced_at
          FROM activities
          WHERE source = ?1 AND occurred_at >= ?2 AND occurred_at < ?3
-         ORDER BY occurred_at DESC
-         LIMIT ?4",
+         ORDER BY occurred_at DESC",
     )?;
 
     let rows = stmt.query_map(
-        params![source.to_string(), start.to_rfc3339(), end.to_rfc3339(), ACTIVITY_LIMIT],
+        params![source.to_string(), start.to_rfc3339(), end.to_rfc3339()],
         row_to_activity,
     )?;
 

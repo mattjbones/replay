@@ -7,7 +7,7 @@ use tauri::State;
 
 use recap_core::auth::{AuthManager, AuthStatus};
 use recap_core::config::AppConfig;
-use recap_core::db::{get_activities_for_range, get_activities_for_range_unlimited, get_cached_summary, set_cached_summary,
+use recap_core::db::{get_activities_for_range, get_cached_summary, set_cached_summary,
     invalidate_all_summaries,
     query_weekly_velocity, query_activity_heatmap, query_cycle_times,
     query_project_distribution, query_message_volume,
@@ -839,7 +839,7 @@ pub async fn get_trends_data(
     let heatmap_rows = query_activity_heatmap(&state.db, since).map_err(|e| e.to_string())?;
     let cycle_rows = query_cycle_times(&state.db, since).map_err(|e| e.to_string())?;
     let project_rows = query_project_distribution(&state.db, since).map_err(|e| e.to_string())?;
-    let burnout_activities = get_activities_for_range_unlimited(&state.db, since, now).map_err(|e| e.to_string())?;
+    let burnout_activities = get_activities_for_range(&state.db, since, now).map_err(|e| e.to_string())?;
     let offhours_rows = build_off_hours_rows(&burnout_activities, &config.working_hours);
     let msg_rows = query_message_volume(&state.db, since).map_err(|e| e.to_string())?;
     let daily_rows = query_daily_vectors(&state.db, since).map_err(|e| e.to_string())?;
