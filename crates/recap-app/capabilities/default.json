@@ -9,6 +9,7 @@
     "notification:allow-request-permission",
     "notification:allow-is-permission-granted",
     "opener:default",
+    "process:allow-restart",
     "updater:default"
   ]
 }

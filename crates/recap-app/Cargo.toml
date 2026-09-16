@@ -9,6 +9,7 @@ recap-core = { workspace = true }
 tauri = { workspace = true }
 tauri-plugin-notification = { workspace = true }
 tauri-plugin-opener = { workspace = true }
+tauri-plugin-process = { workspace = true }
 tauri-plugin-updater = { workspace = true }
 tokio = { workspace = true }
 rusqlite = { workspace = true }
