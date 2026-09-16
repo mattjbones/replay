@@ -2845,13 +2845,13 @@ function renderProductivityChart(prod) {
 
 function renderDayClusters(data) {
   const palette = [cssVar('--highlight'), cssVar('--text-dim'), cssVar('--accent')];
-  const dims = ['Commits', 'PRs', 'Reviews', 'Issues', 'Msgs'];
+  const dims = data.dimensions || [];
   let html = '<div class="cluster-grid">';
   data.clusters.forEach((c, i) => {
     const color = palette[i % palette.length];
     const maxC = Math.max(1, ...c.centroid);
     const bars = c.centroid.map((v, di) =>
-      `<div class="cluster-bar-seg" style="flex:${Math.max(v, 0.1)};background:${color};opacity:${0.3 + 0.7 * (v / maxC)}" title="${dims[di]}: ${v}"></div>`
+      `<div class="cluster-bar-seg" style="flex:${Math.max(v, 0.1)};background:${color};opacity:${0.3 + 0.7 * (v / maxC)}" title="${dims[di] || ''}: ${v}"></div>`
     ).join('');
     html += `<div class="cluster-card">
       <div class="cluster-dot" style="background:${color}"></div>

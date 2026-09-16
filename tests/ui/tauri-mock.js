@@ -159,6 +159,7 @@
         { date: "2026-03-16", cluster: "Coding Day" },
         { date: "2026-03-17", cluster: "Reviews Day" },
       ],
+      dimensions: ["Coding", "PRs", "Reviews", "Issues", "Comms"],
     },
     project_prediction: [
       { project: "recap", probability: 0.65 },
