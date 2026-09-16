@@ -2276,7 +2276,7 @@ function renderSettingsPrefs() {
         <option value="pr"${(c.github?.workflow || 'pr') === 'pr' ? ' selected' : ''}>PR-based (feature branches)</option>
         <option value="trunk"${c.github?.workflow === 'trunk' ? ' selected' : ''}>Trunk-based (commits to main)</option>
       </select>
-      <div class="pref-hint">PR-based shows PRs first; trunk-based emphasizes commits</div>
+      <div class="pref-hint">PR-based hides raw commits from charts/totals/AI summaries; trunk-based hides PR events instead</div>
     </div>
     <div class="pref-row">
       <label class="pref-label">LLM profile</label>

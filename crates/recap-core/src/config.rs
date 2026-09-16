@@ -190,6 +190,19 @@ pub enum GitHubWorkflow {
     Trunk,
 }
 
+impl GitHubWorkflow {
+    /// Returns true if activities of this kind should be excluded from charts, totals, and
+    /// AI-generated summaries under this workflow. PR-based teams squash/merge, so a raw commit
+    /// carries no signal beyond its PR and just reads as noise (or a false "you committed less"
+    /// signal); trunk-based teams don't meaningfully use PRs at all.
+    pub fn excludes_kind(&self, kind: &str) -> bool {
+        match self {
+            GitHubWorkflow::Pr => kind == "commit_pushed",
+            GitHubWorkflow::Trunk => matches!(kind, "pr_opened" | "pr_merged" | "pr_reviewed"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GitHubConfig {
     #[serde(default)]

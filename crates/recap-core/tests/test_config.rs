@@ -82,6 +82,26 @@ fn github_workflow_enum_serialization() {
 }
 
 #[test]
+fn github_workflow_excludes_the_opposite_signal() {
+    use recap_core::config::GitHubWorkflow;
+
+    // PR-based workflows hide raw commits (already represented by their PR)
+    // but keep PR/issue/other activity.
+    assert!(GitHubWorkflow::Pr.excludes_kind("commit_pushed"));
+    assert!(!GitHubWorkflow::Pr.excludes_kind("pr_merged"));
+    assert!(!GitHubWorkflow::Pr.excludes_kind("pr_opened"));
+    assert!(!GitHubWorkflow::Pr.excludes_kind("pr_reviewed"));
+    assert!(!GitHubWorkflow::Pr.excludes_kind("issue_completed"));
+
+    // Trunk-based workflows hide PR events, which mirror keeps commits.
+    assert!(GitHubWorkflow::Trunk.excludes_kind("pr_opened"));
+    assert!(GitHubWorkflow::Trunk.excludes_kind("pr_merged"));
+    assert!(GitHubWorkflow::Trunk.excludes_kind("pr_reviewed"));
+    assert!(!GitHubWorkflow::Trunk.excludes_kind("commit_pushed"));
+    assert!(!GitHubWorkflow::Trunk.excludes_kind("issue_completed"));
+}
+
+#[test]
 fn llm_profile_enum_serialization() {
     use recap_core::config::LlmProfile;
 
