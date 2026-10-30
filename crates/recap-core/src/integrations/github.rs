@@ -1423,7 +1423,7 @@ mod tests {
 
     #[test]
     fn body_credits_matches_claude_attribution_line() {
-        let body = "<!-- claude-slack-attribution -->\n_Requested by **Jane Smith-Jones** · [Slack thread](https://x)_\n\n## Problem";
+        let body = "<!-- bot-attribution -->\n_Requested by **Jane Smith-Jones** · [Slack thread](https://x)_\n\n## Problem";
         assert!(body_credits(body, "Jane Smith-Jones"));
         assert!(body_credits(body, "jane smith-jones"));
     }
