@@ -604,7 +604,7 @@ function initKindColors() {
 }
 
 // ===== Delegated (bot) work =====
-// PRs a bot like claude[bot] opened on the user's behalf count as the user's work; the 🤖
+// PRs a bot opened on the user's behalf count as the user's work; the 🤖
 // marker only tells them apart visually.
 
 const isDelegated = (a) => !!a?.metadata?.delegated;

@@ -400,7 +400,7 @@ pub async fn get_chart_data(
     Ok(ChartData { labels, datasets })
 }
 
-/// True if a delegated bot (e.g. `claude[bot]`) did this on the user's behalf.
+/// True if a delegated bot (e.g. `your-bot[bot]`) did this on the user's behalf.
 fn is_delegated(a: &Activity) -> bool {
     a.metadata.get("delegated").is_some_and(|v| !v.is_null())
 }
