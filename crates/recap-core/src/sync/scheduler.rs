@@ -1,12 +1,21 @@
 use std::sync::Arc;
+use chrono::{DateTime, Utc};
 use tokio::task::JoinSet;
 
 use crate::auth::AuthManager;
 use crate::config::AppConfig;
-use crate::db::{get_sync_cursor, is_cache_fresh, update_sync_cursor, batch_upsert_activities, cleanup_expired_cache};
+use crate::db::{get_sync_cursor, is_cache_fresh, update_sync_cursor, batch_upsert_activities, cleanup_expired_cache, set_sync_status, mark_days_fetched, is_range_fetched};
 use crate::db::Database;
 use crate::integrations::{Integration, IntegrationError};
 use crate::models::Source;
+
+/// What one integration is asked to fetch in a sync pass.
+enum Job {
+    /// Everything new since this cursor.
+    Incremental(String),
+    /// Exactly this time range.
+    Range(DateTime<Utc>, DateTime<Utc>),
+}
 
 pub struct SyncScheduler {
     db: Arc<Database>,
@@ -73,16 +82,19 @@ impl SyncScheduler {
     pub async fn run_once(&self) {
         let ttl = self.config.ttl.hot_minutes;
 
-        // Collect work items: (index, cursor) for integrations whose cache is stale.
-        let mut work: Vec<(usize, Option<String>)> = Vec::new();
+        // Collect work items for integrations whose cache is stale.
+        let mut work: Vec<(usize, Job)> = Vec::new();
         for (idx, integration) in self.integrations.iter().enumerate() {
             let source = integration.source();
             if is_cache_fresh(&self.db, &source, ttl) {
                 tracing::debug!("cache fresh for {source}, skipping");
                 continue;
             }
-            let cursor = get_sync_cursor(&self.db, &source);
-            work.push((idx, cursor));
+            // With no cursor (first run, or after a cache clear) only pick up the last day:
+            // history is filled in week by week by `backfill`, not in one huge request.
+            let cursor = get_sync_cursor(&self.db, &source)
+                .unwrap_or_else(|| (Utc::now() - chrono::Duration::days(1)).to_rfc3339());
+            work.push((idx, Job::Incremental(cursor)));
         }
 
         if work.is_empty() {
@@ -90,18 +102,69 @@ impl SyncScheduler {
             return;
         }
 
-        // Fan-out: run each stale integration concurrently via JoinSet.
+        self.run_work(work).await;
+
+        // Clean up expired LLM cache entries
+        cleanup_expired_cache(&self.db, self.config.ttl.cold_minutes);
+    }
+
+    /// Re-fetch exactly `since..until` from every integration, ignoring cache freshness and
+    /// the stored cursors. Fetched activities overwrite stored ones; nothing is deleted.
+    /// When every integration succeeds the range's days are marked fetched. Returns whether
+    /// every integration succeeded.
+    pub async fn refresh_range(&self, since: DateTime<Utc>, until: DateTime<Utc>) -> bool {
+        let until = until.min(Utc::now());
+        if since >= until {
+            return true;
+        }
+        let work = (0..self.integrations.len()).map(|idx| (idx, Job::Range(since, until))).collect();
+        let all_ok = self.run_work(work).await;
+        if all_ok {
+            mark_days_fetched(&self.db, since, until);
+        }
+        all_ok
+    }
+
+    /// Fill in history newest-first, one week at a time, skipping weeks already fetched.
+    /// `on_week` is called after each week with (weeks done, total); returning false stops.
+    pub async fn backfill(&self, weeks: u32, on_week: impl Fn(u32, u32) -> bool) {
+        let this_week = crate::time::parse_period_range("week", None).map(|(_, start, _)| start);
+        let Ok(this_week) = this_week else { return };
+        for i in 0..weeks {
+            let start = this_week - chrono::Duration::weeks(i as i64);
+            let end = start + chrono::Duration::weeks(1);
+            if !is_range_fetched(&self.db, start, end) {
+                tracing::info!("backfill: week {} of {weeks} ({start})", i + 1);
+                // One retry after a pause: failures here are usually rate limits.
+                if !self.refresh_range(start, end).await {
+                    tracing::warn!("backfill: week {} failed, retrying in 60s", i + 1);
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    self.refresh_range(start, end).await;
+                }
+            }
+            if !on_week(i + 1, weeks) {
+                return;
+            }
+        }
+    }
+
+    /// Fan out `work` across integrations concurrently and store the results.
+    /// Returns true if every job succeeded.
+    async fn run_work(&self, work: Vec<(usize, Job)>) -> bool {
+        // Fan-out: run each integration concurrently via JoinSet.
         type SyncResult = (
             Source,
             Arc<Database>,
+            Job,
             Result<(Vec<crate::models::Activity>, String), IntegrationError>,
         );
         let mut join_set: JoinSet<SyncResult> = JoinSet::new();
+        // Which source each task is for, so a panicking task still gets an amber light.
+        let mut task_sources = std::collections::HashMap::new();
 
-        for (idx, cursor) in work {
+        for (idx, job) in work {
             let db = Arc::clone(&self.db);
             let source = self.integrations[idx].source();
-            let cursor_owned = cursor;
 
             // SAFETY: self.integrations[idx] lives for the duration of this method.
             // We join all tasks before returning, so the pointer remains valid.
@@ -110,40 +173,65 @@ impl SyncScheduler {
                 ptr: &*self.integrations[idx] as *const dyn Integration,
             };
 
-            join_set.spawn(async move {
-                // SAFETY: pointer is valid -- we join before run_once returns.
+            let task_source = source.clone();
+            let abort = join_set.spawn(async move {
+                // SAFETY: pointer is valid -- we join before run_work returns.
                 let integration = unsafe { handle.as_ref() };
-                let result = integration
-                    .fetch_activities(cursor_owned.as_deref())
-                    .await;
-                (source, db, result)
+                let result = match &job {
+                    Job::Incremental(cursor) => integration.fetch_activities(Some(cursor)).await,
+                    Job::Range(since, until) => integration
+                        .fetch_range(*since, *until)
+                        .await
+                        .map(|acts| (acts, String::new())),
+                };
+                (source, db, job, result)
             });
+            task_sources.insert(abort.id(), task_source);
         }
 
+        let mut all_ok = true;
         while let Some(outcome) = join_set.join_next().await {
             match outcome {
-                Ok((source, db, Ok((activities, new_cursor)))) => {
-                    let count = activities.len();
-                    if let Err(e) = batch_upsert_activities(&db, &activities) {
-                        tracing::error!("failed to batch upsert activities from {source}: {e}");
+                Ok((source, db, job, Ok((mut activities, new_cursor)))) => {
+                    if let Job::Range(since, until) = job {
+                        // Only overwrite what's inside the range; anything outside may have
+                        // been built from partial data.
+                        activities.retain(|a| a.occurred_at >= since && a.occurred_at < until);
                     }
-                    update_sync_cursor(&db, &source, &new_cursor);
+                    let count = activities.len();
+                    match batch_upsert_activities(&db, &activities) {
+                        Ok(()) => set_sync_status(&db, &source, true, None),
+                        Err(e) => {
+                            all_ok = false;
+                            tracing::error!("failed to batch upsert activities from {source}: {e}");
+                            set_sync_status(&db, &source, false, Some(&format!("failed to save activities: {e}")));
+                        }
+                    }
+                    if let Job::Incremental(_) = job {
+                        update_sync_cursor(&db, &source, &new_cursor);
+                    }
                     tracing::info!("synced {count} activities from {source}");
                 }
-                Ok((source, _db, Err(IntegrationError::RateLimit { retry_after_secs }))) => {
+                Ok((source, db, _, Err(IntegrationError::RateLimit { retry_after_secs }))) => {
+                    all_ok = false;
                     tracing::warn!("{source}: rate limited, retry after {retry_after_secs}s");
+                    set_sync_status(&db, &source, false, Some(&format!("rate limited, retry after {retry_after_secs}s")));
                 }
-                Ok((source, _db, Err(e))) => {
+                Ok((source, db, _, Err(e))) => {
+                    all_ok = false;
                     tracing::error!("sync error for {source}: {e}");
+                    set_sync_status(&db, &source, false, Some(&e.to_string()));
                 }
                 Err(join_err) => {
+                    all_ok = false;
                     tracing::error!("sync task panicked: {join_err}");
+                    if let Some(source) = task_sources.get(&join_err.id()) {
+                        set_sync_status(&self.db, source, false, Some(&format!("crashed: {join_err}")));
+                    }
                 }
             }
         }
-
-        // Clean up expired LLM cache entries
-        cleanup_expired_cache(&self.db, self.config.ttl.cold_minutes);
+        all_ok
     }
 
     /// Spawn a background loop that calls `run_once` on the configured interval.

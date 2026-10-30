@@ -10,6 +10,8 @@ cold_minutes = 1440
 
 [github]
 # username = "your-github-username"
+# Bot PRs opened on your behalf count as yours (marked 🤖) when the body says "Requested by <name>".
+# delegated_authors = [{ author = "app/your-bot", requested_by = "Your Name" }]  # see README "Delegated authors"
 
 [slack]
 # user_id = "U..."

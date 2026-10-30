@@ -21,6 +21,69 @@ use recap_core::time::parse_period_range;
 pub struct AppState {
     pub db: Arc<Database>,
     pub config: std::sync::Mutex<AppConfig>,
+    pub backfill: Arc<std::sync::Mutex<BackfillStatus>>,
+}
+
+/// How far back the background backfill fills in history.
+pub const BACKFILL_WEEKS: u32 = 12;
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct BackfillStatus {
+    pub running: bool,
+    pub done: u32,
+    pub total: u32,
+    /// Bumped by each start; an older run stops once it sees it's been superseded.
+    #[serde(skip)]
+    generation: u64,
+}
+
+/// Start filling in the last `BACKFILL_WEEKS` weeks in the background, newest first,
+/// replacing any backfill already running (e.g. after a cache clear).
+pub fn start_backfill(
+    db: Arc<Database>,
+    config: AppConfig,
+    status: Arc<std::sync::Mutex<BackfillStatus>>,
+) {
+    let generation = {
+        let mut s = status.lock().unwrap();
+        s.generation += 1;
+        s.running = true;
+        s.done = 0;
+        s.total = BACKFILL_WEEKS;
+        s.generation
+    };
+    tauri::async_runtime::spawn(async move {
+        let scheduler = SyncScheduler::new(db, config);
+        scheduler.backfill(BACKFILL_WEEKS, |done, total| {
+            let mut s = status.lock().unwrap();
+            if s.generation != generation {
+                return false;
+            }
+            s.done = done;
+            s.total = total;
+            true
+        }).await;
+        let mut s = status.lock().unwrap();
+        if s.generation == generation {
+            s.running = false;
+        }
+    });
+}
+
+#[tauri::command]
+pub async fn get_backfill_status(state: State<'_, AppState>) -> Result<BackfillStatus, String> {
+    Ok(state.backfill.lock().map_err(|e| e.to_string())?.clone())
+}
+
+/// Whether every day of the period has been fetched; the UI fetches it on first visit if not.
+#[tauri::command]
+pub async fn is_period_fetched(
+    state: State<'_, AppState>,
+    period: String,
+    date: Option<String>,
+) -> Result<bool, String> {
+    let (_p, start, end) = parse_period_range(&period, date.as_deref())?;
+    Ok(recap_core::db::is_range_fetched(&state.db, start, end))
 }
 
 /// Drops activities the configured GitHub workflow says aren't worth showing
@@ -138,25 +201,32 @@ pub async fn get_all_activities(
 
 #[tauri::command]
 pub async fn clear_cache(state: State<'_, AppState>) -> Result<(), String> {
-    let conn = state.db.conn.lock().map_err(|e| e.to_string())?;
+    // Scoped so the DB lock is released before the backfill starts.
+    {
+        let conn = state.db.conn.lock().map_err(|e| e.to_string())?;
 
-    let act_count: i64 = conn.query_row("SELECT COUNT(*) FROM activities", [], |r| r.get(0))
-        .unwrap_or(0);
-    let cursor_count: i64 = conn.query_row("SELECT COUNT(*) FROM sync_cursors", [], |r| r.get(0))
-        .unwrap_or(0);
-    let llm_count: i64 = conn.query_row("SELECT COUNT(*) FROM llm_cache", [], |r| r.get(0))
-        .unwrap_or(0);
+        let act_count: i64 = conn.query_row("SELECT COUNT(*) FROM activities", [], |r| r.get(0))
+            .unwrap_or(0);
+        let cursor_count: i64 = conn.query_row("SELECT COUNT(*) FROM sync_cursors", [], |r| r.get(0))
+            .unwrap_or(0);
+        let llm_count: i64 = conn.query_row("SELECT COUNT(*) FROM llm_cache", [], |r| r.get(0))
+            .unwrap_or(0);
 
-    tracing::info!("clear_cache: deleting {act_count} activities, {cursor_count} sync cursors, {llm_count} llm cache entries");
+        tracing::info!("clear_cache: deleting {act_count} activities, {cursor_count} sync cursors, {llm_count} llm cache entries");
 
-    conn.execute_batch(
-        "DELETE FROM activities; DELETE FROM sync_cursors; DELETE FROM llm_cache;"
-    ).map_err(|e| e.to_string())?;
+        conn.execute_batch(
+            "DELETE FROM activities; DELETE FROM sync_cursors; DELETE FROM llm_cache;
+             DELETE FROM fetched_days; DELETE FROM sync_status;"
+        ).map_err(|e| e.to_string())?;
 
-    let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM activities", [], |r| r.get(0))
-        .unwrap_or(-1);
-    tracing::info!("clear_cache: done. activities remaining: {remaining}");
+        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM activities", [], |r| r.get(0))
+            .unwrap_or(-1);
+        tracing::info!("clear_cache: done. activities remaining: {remaining}");
+    }
 
+    // Refill history gradually rather than in one huge fetch.
+    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
+    start_backfill(Arc::clone(&state.db), config, Arc::clone(&state.backfill));
     Ok(())
 }
 
@@ -167,18 +237,38 @@ pub async fn clear_llm_cache(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn trigger_sync(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn trigger_sync(
+    state: State<'_, AppState>,
+    period: Option<String>,
+    date: Option<String>,
+) -> Result<String, String> {
     let db = Arc::clone(&state.db);
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
 
     let scheduler = SyncScheduler::new(Arc::clone(&db), config);
-    scheduler.run_once().await;
+    // With a period, re-fetch exactly that period (the user is looking at it); otherwise
+    // just pick up what's new since the last sync.
+    match period {
+        Some(p) => {
+            let (_p, start, end) = parse_period_range(&p, date.as_deref())?;
+            scheduler.refresh_range(start, end).await;
+        }
+        None => scheduler.run_once().await,
+    }
 
     // Invalidate LLM summaries so they regenerate with fresh data
     // (important when working hours or other settings change).
     invalidate_all_summaries(&db);
 
     Ok("sync complete".to_string())
+}
+
+/// Last sync outcome per source, for the status lights in Settings.
+#[tauri::command]
+pub async fn get_sync_status(
+    state: State<'_, AppState>,
+) -> Result<Vec<recap_core::db::SyncStatus>, String> {
+    recap_core::db::get_sync_statuses(&state.db).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -276,12 +366,13 @@ pub async fn get_chart_data(
         current += chrono::Duration::days(1);
     }
 
-    let series = ["merges", "reviews", "commits", "issues", "messages"];
+    let series = ["merges", "merges_delegated", "reviews", "commits", "issues", "messages"];
 
     for a in &activities {
         let day_label = a.occurred_at.format("%a %d").to_string();
         if let Some(bucket) = day_map.get_mut(&day_label) {
             let key = match a.kind {
+                ActivityKind::PrMerged if is_delegated(a) => "merges_delegated",
                 ActivityKind::PrMerged => "merges",
                 ActivityKind::PrReviewed => "reviews",
                 ActivityKind::CommitPushed => "commits",
@@ -307,6 +398,11 @@ pub async fn get_chart_data(
     }
 
     Ok(ChartData { labels, datasets })
+}
+
+/// True if a delegated bot (e.g. `your-bot[bot]`) did this on the user's behalf.
+fn is_delegated(a: &Activity) -> bool {
+    a.metadata.get("delegated").is_some_and(|v| !v.is_null())
 }
 
 // ---------------------------------------------------------------------------
@@ -543,6 +639,8 @@ pub struct VelocityData {
     pub weeks: Vec<String>,
     pub series: HashMap<String, Vec<f64>>,
     pub trend_slopes: HashMap<String, f64>,
+    /// Per-kind weekly counts done by delegated bots — a subset of `series`, for display only.
+    pub delegated: HashMap<String, Vec<f64>>,
 }
 
 #[derive(Serialize)]
@@ -913,10 +1011,22 @@ pub async fn get_trends_data(
         trend_slopes.insert(kind.clone(), slope);
     }
 
+    let delegated_merges: Vec<f64> = week_set.iter().map(|w| {
+        burnout_activities.iter()
+            .filter(|a| a.kind == ActivityKind::PrMerged && is_delegated(a))
+            .filter(|a| a.occurred_at.format("%Y-W%W").to_string() == *w)
+            .count() as f64
+    }).collect();
+    let mut delegated = HashMap::new();
+    if vel_series.contains_key("pr_merged") {
+        delegated.insert("pr_merged".to_string(), delegated_merges);
+    }
+
     let velocity = VelocityData {
         weeks: week_set.clone(),
         series: vel_series.clone(),
         trend_slopes: trend_slopes.clone(),
+        delegated,
     };
 
     // --- Anomaly Detection (Z-score on weekly velocity) ---
