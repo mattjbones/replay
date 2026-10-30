@@ -138,14 +138,25 @@ Recap syncs data from all connected services on a background loop:
 4. Stale sources are fetched **concurrently** via `tokio::JoinSet`
 5. Each integration uses incremental cursors — only fetching events/items newer than the last sync
 6. New activities are upserted into SQLite (deduped by `source + source_id`)
-7. The UI does **not** poll — it fetches on load, tab switch, or manual sync
+7. The UI does **not** poll for activity — it fetches on load, tab switch, or manual sync
 
-**GitHub uses two data sources per sync:**
-- Events API (`/users/{username}/events`) — pushes, reviews, issues
-- Search API (`/search/issues?q=author:{username}`) — all authored PRs with merge status
+**History and refreshing a period:**
+
+- **Backfill** — on startup and after *Clear Cached Data*, Recap fills in the last 12 weeks one week at a time, newest first, so each week appears as it lands. A small "Backfilling n/12 wks" indicator shows progress. Weeks already fetched are skipped.
+- **Sync** refreshes exactly the period you're viewing (day / week / month), re-fetching it from every source rather than just what's new.
+- **Older periods** that have never been fetched (e.g. a week months ago) load automatically the first time you open them ("Refreshing…").
+- Which days are fully fetched is tracked in the `fetched_days` table. GitHub's events feed can't reach back, so refreshed past periods include PRs, reviews and issues but not raw commits.
+
+**GitHub data sources:**
+- Events API (`/users/{username}/events`) — pushes, issue events
+- Search API (`/search/issues?q=author:{username}`) — all authored PRs with merge status, searched in 30-day windows and paginated so results aren't cut off
+- GraphQL search (`reviewed-by:{username}`) — your reviews, batched 100 PRs per request; each PR counts at most once per day
+- Delegated authors — PRs a bot opened on your behalf (see [Delegated authors](#delegated-authors-bot-prs))
 - Graphite merge detection — for closed PRs without `merged_at`, checks if the head branch was deleted (parallel via `JoinSet`)
 
-**Rate limit handling:** Each integration detects 429/rate-limit responses and backs off with the `Retry-After` header value.
+**Rate limit handling:** Integrations detect 429/rate-limit responses and wait (using `Retry-After` / reset headers) before retrying. A backfill week that still fails is retried once after a pause, and again on next launch.
+
+**Connection status:** each source's last sync result is recorded. In **Settings → Connections** a connected source shows green, or amber with the error message when its last sync failed. The app logs to `app.log` in the config directory (next to the daemon's logs).
 
 ## AI Features
 
@@ -183,12 +194,37 @@ cold_minutes = 1440              # Cache TTL for older data (24h)
 
 [github]
 # username = "your-username"     # Auto-detected from `gh` CLI if omitted
+# workflow = "pr"                # "pr" or "trunk"
+# delegated_authors = [{ author = "app/your-bot", requested_by = "Your Name" }]
+
+[slack]
+# user_id = "U..."               # Auto-detected from your token if omitted
 
 [llm]
 enabled = false                  # Set to true for Anthropic API fallback
 # model = "claude-haiku-4-5-20251001"
 # profile = "work"               # "work" or "personal"
 ```
+
+### Delegated authors (bot PRs)
+
+If a bot or AI agent opens pull requests on your behalf, Recap can count them as your work. The PRs must say who asked for them. Add each bot to `delegated_authors`:
+
+```toml
+[github]
+delegated_authors = [
+  { author = "app/your-bot", requested_by = "Your Name" },
+]
+```
+
+| Field | Meaning |
+|-------|---------|
+| `author` | The bot's GitHub search author qualifier. GitHub Apps use `app/<slug>` (the PR shows `<slug>[bot]` as the author); bot user accounts use their login. |
+| `requested_by` | The name the bot writes in the PR description's `Requested by <name>` line. |
+
+A PR is counted only when its author matches **and** its description contains `Requested by <name>`. The match ignores case and markdown emphasis (`**`, `_`), and the name must end at a word boundary, so `Requested by Jane Smith` doesn't match `Jane Smith-Jones`. You can list several bots.
+
+Matching PRs count as yours everywhere: merge counts, trends, forecasts and AI summaries. They're marked with 🤖 in PR lists, merge counts read like `26 (incl. 13 🤖)`, and charts stack the bot share separately. To pick them up retroactively, use *Clear Cached Data* (Settings) or press Sync on the period you want refreshed.
 
 ## Architecture
 
