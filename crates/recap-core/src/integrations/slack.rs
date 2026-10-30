@@ -11,7 +11,8 @@ use super::{Integration, IntegrationError};
 pub struct SlackIntegration {
     client: reqwest::Client,
     token: std::sync::Mutex<String>,
-    user_id: String,
+    /// Configured Slack user id; resolved from the token via `auth.test` when unset.
+    user_id: tokio::sync::OnceCell<String>,
     ignored_channels: Vec<String>,
     client_id: Option<String>,
     client_secret: Option<String>,
@@ -24,7 +25,10 @@ impl SlackIntegration {
             .flatten()
             .unwrap_or_default();
 
-        let user_id = config.slack.user_id.unwrap_or_default();
+        let user_id = match config.slack.user_id.filter(|u| !u.is_empty()) {
+            Some(u) => tokio::sync::OnceCell::new_with(Some(u)),
+            None => tokio::sync::OnceCell::new(),
+        };
         let ignored_channels = config.slack.ignored_channels.clone();
         let client_id = config.slack.client_id.clone();
         let client_secret = config.slack.client_secret.clone();
@@ -38,6 +42,33 @@ impl SlackIntegration {
             client_id,
             client_secret,
         }
+    }
+
+    /// The user's Slack id: from config, else asked of Slack for the token's owner. Without it
+    /// the search query is `from:<@>`, which silently matches nothing.
+    async fn user_id(&self) -> Result<&str, IntegrationError> {
+        self.user_id.get_or_try_init(|| async {
+            let token = self.token.lock().unwrap().clone();
+            let body: serde_json::Value = self.client
+                .get("https://slack.com/api/auth.test")
+                .header("Authorization", format!("Bearer {token}"))
+                .send()
+                .await
+                .map_err(|e| IntegrationError::Network(e.to_string()))?
+                .json()
+                .await
+                .map_err(|e| IntegrationError::Parse(e.to_string()))?;
+            match body["user_id"].as_str() {
+                Some(id) if body["ok"].as_bool() == Some(true) => {
+                    tracing::info!("slack: resolved user id {id} via auth.test");
+                    Ok(id.to_string())
+                }
+                _ => Err(IntegrationError::Auth(format!(
+                    "couldn't work out your Slack user id (auth.test: {}); set slack.user_id in config",
+                    body["error"].as_str().unwrap_or("unknown error")
+                ))),
+            }
+        }).await.map(String::as_str)
     }
 
     /// Attempt to refresh the Slack access token using the stored refresh token.
@@ -195,6 +226,15 @@ struct SlackChannel {
     name: String,
 }
 
+/// First `max` characters of `text` plus "..." if it was longer. Counts chars, not bytes:
+/// slicing at byte 200 panics when that lands inside a multi-byte character like `”`.
+fn truncate_chars(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((i, _)) => format!("{}...", &text[..i]),
+        None => text.to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Integration implementation
 // ---------------------------------------------------------------------------
@@ -209,16 +249,57 @@ impl Integration for SlackIntegration {
         &self,
         since: Option<&str>,
     ) -> Result<(Vec<Activity>, String), IntegrationError> {
-        let since_ts: Option<f64> = since.and_then(Self::parse_since);
+        // First sync (no cursor) reaches back 90 days.
+        let since_ts: f64 = since
+            .and_then(Self::parse_since)
+            .unwrap_or_else(|| (Utc::now() - chrono::Duration::days(90)).timestamp() as f64);
+        self.fetch_between(since_ts, None, since).await
+    }
+
+    async fn fetch_range(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<Activity>, IntegrationError> {
+        self.fetch_between(since.timestamp() as f64, Some(until.timestamp() as f64), None)
+            .await
+            .map(|(acts, _)| acts)
+    }
+}
+
+impl SlackIntegration {
+    /// Fetch the user's messages after `since_ts` (and before `until_ts`, if given).
+    /// `since` is the raw cursor, echoed back as the new cursor when nothing new is found.
+    async fn fetch_between(
+        &self,
+        since_ts: f64,
+        until_ts: Option<f64>,
+        since: Option<&str>,
+    ) -> Result<(Vec<Activity>, String), IntegrationError> {
+        let user_id = self.user_id().await?;
+        // `after:`/`before:` are exclusive and day-granular, so widen by a day each side and
+        // let the per-message timestamp checks trim the rest.
+        let day = |ts: f64, offset: i64| {
+            DateTime::from_timestamp(ts as i64, 0)
+                .map(|dt| (dt + chrono::Duration::days(offset)).format("%Y-%m-%d").to_string())
+                .unwrap_or_default()
+        };
+        let mut query = format!("from:<@{user_id}> after:{}", day(since_ts, -1));
+        if let Some(until) = until_ts {
+            query.push_str(&format!(" before:{}", day(until, 1)));
+        }
+        let mut rate_limit_retries = 0u32;
 
         let mut all_activities: Vec<Activity> = Vec::new();
         let mut latest_ts: Option<String> = None;
 
-        // Page through results, up to 3 pages.
-        for page in 1..=3u32 {
+        // Page back until we pass `since` (Slack serves at most 100 pages of 100).
+        let mut page = 0u32;
+        while page < 100 {
+            page += 1;
             let url = format!(
-                "https://slack.com/api/search.messages?query=from:<@{}>&sort=timestamp&sort_dir=desc&count=100&page={}",
-                self.user_id, page
+                "https://slack.com/api/search.messages?query={}&sort=timestamp&sort_dir=desc&count=100&page={}",
+                urlencoding::encode(&query), page
             );
 
             let token = self.token.lock().unwrap().clone();
@@ -239,6 +320,14 @@ impl Integration for SlackIntegration {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.parse::<u64>().ok())
                     .unwrap_or(60);
+                // search.messages is Tier 2 (~20/min), so a long backfill can hit this.
+                if rate_limit_retries < 3 {
+                    rate_limit_retries += 1;
+                    tracing::warn!("slack: rate limited on page {page}, waiting {retry_after}s");
+                    tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
+                    page -= 1;
+                    continue;
+                }
                 return Err(IntegrationError::RateLimit {
                     retry_after_secs: retry_after,
                 });
@@ -288,6 +377,14 @@ impl Integration for SlackIntegration {
                         }
                     }
                     "ratelimited" => {
+                        // Same as an HTTP 429, but reported in the body.
+                        if rate_limit_retries < 3 {
+                            rate_limit_retries += 1;
+                            tracing::warn!("slack: rate limited on page {page}, waiting 60s");
+                            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                            page -= 1;
+                            continue;
+                        }
                         return Err(IntegrationError::RateLimit {
                             retry_after_secs: 60,
                         });
@@ -312,11 +409,13 @@ impl Integration for SlackIntegration {
                 let msg_ts_f64 = Self::ts_to_f64(&msg.ts);
 
                 // Skip messages older than the cursor.
-                if let Some(since_val) = since_ts {
-                    if msg_ts_f64 <= since_val {
-                        reached_old = true;
-                        break;
-                    }
+                if msg_ts_f64 <= since_ts {
+                    reached_old = true;
+                    break;
+                }
+                // Results are newest-first; skip past the end of the range.
+                if until_ts.is_some_and(|until| msg_ts_f64 >= until) {
+                    continue;
                 }
 
                 // Track the most recent ts for the new cursor.
@@ -372,11 +471,7 @@ impl Integration for SlackIntegration {
 
                 // Truncate text to 200 chars for description.
                 if let Some(ref text) = msg.text {
-                    let desc = if text.len() > 200 {
-                        format!("{}...", &text[..200])
-                    } else {
-                        text.clone()
-                    };
+                    let desc = truncate_chars(text, 200);
                     activity.description = Some(desc);
                 }
 
@@ -413,5 +508,18 @@ impl Integration for SlackIntegration {
         });
 
         Ok((all_activities, cursor))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_chars;
+
+    #[test]
+    fn truncate_chars_never_splits_a_multibyte_character() {
+        // 199 ASCII chars then a 3-byte quote straddling byte 200 — used to panic.
+        let text = format!("{}”tail", "a".repeat(199));
+        assert_eq!(truncate_chars(&text, 200), format!("{}”...", "a".repeat(199)));
+        assert_eq!(truncate_chars("short", 200), "short");
     }
 }

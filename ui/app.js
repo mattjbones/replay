@@ -592,6 +592,7 @@ let KIND_COLORS = {};
 function initKindColors() {
   KIND_COLORS = {
     merges: cssVar('--status-merged'),
+    mergesDelegated: cssVar('--status-merged') + '80',
     reviews: cssVar('--status-review'),
     commits: cssVar('--status-backlog'),
     issues: cssVar('--linear'),
@@ -600,6 +601,22 @@ function initKindColors() {
     completed: cssVar('--status-completed'),
     closed: cssVar('--status-closed'),
   };
+}
+
+// ===== Delegated (bot) work =====
+// PRs a bot like claude[bot] opened on the user's behalf count as the user's work; the 🤖
+// marker only tells them apart visually.
+
+const isDelegated = (a) => !!a?.metadata?.delegated;
+
+function botMark(label) {
+  if (!label) return '';
+  return ` <span class="bot-mark" title="Opened by ${escapeAttr(label)}[bot] on your behalf">🤖</span>`;
+}
+
+/** "14" or "14 <small>(incl. 4 🤖)</small>" — the total, with the bot share when there is one. */
+function withBotShare(total, botCount) {
+  return botCount ? `${total} <span class="bot-share">(incl. ${botCount} 🤖)</span>` : `${total}`;
 }
 
 // ===== DOM References =====
@@ -763,6 +780,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   } catch {}
   updateProfileModeUI();
   await loadDashboard();
+  pollBackfill();
 
   // Check for updates after UI is loaded
   setTimeout(checkForUpdates, 5000);
@@ -1189,12 +1207,74 @@ function invokeArgs() {
   return args;
 }
 
-async function loadDashboard() {
+// ===== Background fetching (period refresh + history backfill) =====
+
+function renderRefreshIndicator() {
+  const el = document.getElementById('refresh-indicator');
+  if (!el) return;
+  const b = state.backfill;
+  const text = state.refreshingPeriod
+    ? 'Refreshing…'
+    : b?.running ? `Backfilling ${b.done}/${b.total} wks` : '';
+  el.hidden = !text;
+  el.querySelector('.refresh-text').textContent = text;
+}
+
+/** First visit to a period that's never been fully fetched: fetch it, then redraw quietly. */
+async function ensurePeriodFetched() {
+  const args = invokeArgs();
+  const key = JSON.stringify(args);
+  state.fetchAttempted ??= new Set();
+  if (state.fetchAttempted.has(key)) return;
+  state.fetchAttempted.add(key);
+
+  try {
+    if (await invoke('is_period_fetched', args)) return;
+  } catch {
+    return;
+  }
+  state.refreshingPeriod = true;
+  renderRefreshIndicator();
+  try {
+    await invoke('trigger_sync', args);
+    // Only redraw if the user is still looking at the same period
+    if (JSON.stringify(invokeArgs()) === key) await loadDashboard({ quiet: true });
+  } catch (err) {
+    console.warn('period refresh failed:', err);
+  } finally {
+    state.refreshingPeriod = false;
+    renderRefreshIndicator();
+  }
+}
+
+/** Track the background backfill, redrawing quietly as each week lands. */
+async function pollBackfill() {
+  if (state.backfillTimer) return;
+  const tick = async () => {
+    const prev = state.backfill;
+    try {
+      state.backfill = await invoke('get_backfill_status');
+    } catch {
+      state.backfill = null;
+    }
+    renderRefreshIndicator();
+    const b = state.backfill;
+    if (prev?.running && b && b.done !== prev.done) loadDashboard({ quiet: true });
+    state.backfillTimer = b?.running ? setTimeout(tick, 3000) : null;
+  };
+  await tick();
+}
+
+async function loadDashboard({ quiet = false } = {}) {
   const hlEl = document.getElementById("headline-metrics");
-  dom.loading.style.display = "";
-  dom.dashboard.style.display = "none";
-  if (hlEl) hlEl.style.display = "none";
-  dom.emptyState.style.display = "none";
+  // Quiet reloads (background data landing) redraw in place instead of flashing a spinner
+  quiet = quiet && !!state.digest;
+  if (!quiet) {
+    dom.loading.style.display = "";
+    dom.dashboard.style.display = "none";
+    if (hlEl) hlEl.style.display = "none";
+    dom.emptyState.style.display = "none";
+  }
 
   try {
     const args = invokeArgs();
@@ -1212,6 +1292,7 @@ async function loadDashboard() {
       dom.dashboard.style.display = "none";
       if (hlEl) hlEl.style.display = "none";
       applyOverviewProfileMode();
+      if (!quiet) ensurePeriodFetched();
       return;
     }
 
@@ -1220,7 +1301,7 @@ async function loadDashboard() {
 
     renderHeadlineMetrics(digest);
     renderActivityChart(chartData);
-    renderPrStats(digest.stats);
+    renderPrStats(digest.stats, digest.activities);
     renderFeatures(features);
     renderLinearProgress(digest.activities);
     renderActivityTable(digest.activities);
@@ -1230,7 +1311,10 @@ async function loadDashboard() {
     initGridSystem();
 
     // Fetch LLM content async (don't block dashboard)
-    fetchBriefing();
+    if (!quiet) {
+      fetchBriefing();
+      ensurePeriodFetched();
+    }
   } catch (err) {
     dom.loading.style.display = "none";
     dom.emptyState.style.display = "";
@@ -1252,6 +1336,8 @@ function renderHeadlineMetrics(digest) {
   const commits = stats.by_kind?.["commit_pushed"] || 0;
   const issuesClosed = stats.by_kind?.["issue_closed"] || 0;
 
+  const botMerged = (digest.activities || []).filter(a => a.kind === 'pr_merged' && isDelegated(a)).length;
+
   const set = (id, value) => {
     const el = document.querySelector(`#${id} .headline-value`);
     if (el) el.textContent = value;
@@ -1259,6 +1345,10 @@ function renderHeadlineMetrics(digest) {
 
   set("hl-total", total);
   set("hl-prs", personal ? commits : merged);
+  if (!personal) {
+    const el = document.querySelector("#hl-prs .headline-value");
+    if (el) el.innerHTML = withBotShare(merged, botMerged);
+  }
   set("hl-reviews", personal ? (merged + reviewed) : reviewed);
   set("hl-issues", personal ? (issuesCompleted + issuesClosed) : issuesCompleted);
 
@@ -1323,6 +1413,12 @@ function renderActivityChart(chartData) {
           borderRadius: 3,
         },
         {
+          label: "Merges 🤖",
+          data: chartData.datasets.merges_delegated || [],
+          backgroundColor: KIND_COLORS.mergesDelegated,
+          borderRadius: 3,
+        },
+        {
           label: "Reviews",
           data: chartData.datasets.reviews || [],
           backgroundColor: KIND_COLORS.reviews,
@@ -1382,14 +1478,14 @@ function renderFallbackStats(chartData) {
   const ds = chartData.datasets;
   const sum = (arr) => (arr || []).reduce((a, b) => a + b, 0);
   return `<div style="padding:10px;font-size:13px;color:var(--text-dim);">
-    Merges: ${sum(ds.merges)} | Reviews: ${sum(ds.reviews)} | Commits: ${sum(ds.commits)} |
+    Merges: ${sum(ds.merges) + sum(ds.merges_delegated)} | Reviews: ${sum(ds.reviews)} | Commits: ${sum(ds.commits)} |
     Issues: ${sum(ds.issues)} | Messages: ${sum(ds.messages)}
   </div>`;
 }
 
 // ===== PR Stats (Donut) =====
 
-function renderPrStats(stats) {
+function renderPrStats(stats, activities = []) {
   if (!stats || !stats.by_kind) {
     dom.prStatsCounts.innerHTML = '<div class="no-data">No PR data</div>';
     return;
@@ -1397,6 +1493,7 @@ function renderPrStats(stats) {
 
   const opened = (stats.by_kind["pr_opened"] || 0);
   const merged = (stats.by_kind["pr_merged"] || 0);
+  const botMerged = activities.filter(a => a.kind === 'pr_merged' && isDelegated(a)).length;
   const reviewed = (stats.by_kind["pr_reviewed"] || 0);
   const total = opened + merged + reviewed;
 
@@ -1410,7 +1507,7 @@ function renderPrStats(stats) {
     <div class="pr-stat-row">
       <span class="pr-stat-dot" style="background:${KIND_COLORS.merges}"></span>
       <span class="pr-stat-label">Merged</span>
-      <span class="pr-stat-value">${merged}</span>
+      <span class="pr-stat-value">${withBotShare(merged, botMerged)}</span>
     </div>
     <div class="pr-stat-row">
       <span class="pr-stat-dot" style="background:${KIND_COLORS.reviews}"></span>
@@ -1598,9 +1695,9 @@ function renderActivityTable(activities) {
     const title = escapeHtml(a.title || "");
     const project = a.project ? `<span class="project-tag">${escapeHtml(a.project)}</span>` : "&mdash;";
 
-    const titleHtml = a.url
+    const titleHtml = (a.url
       ? `<a class="activity-title-link" href="${escapeAttr(a.url)}" target="_blank" title="${escapeAttr(a.title)}">${title}</a>`
-      : `<span class="activity-title-text" title="${escapeAttr(a.title)}">${title}</span>`;
+      : `<span class="activity-title-text" title="${escapeAttr(a.title)}">${title}</span>`) + botMark(a.metadata?.delegated);
 
     html += `<tr>
       <td><span class="kind-badge ${kindClass}">${kindLabel}</span></td>
@@ -1633,6 +1730,7 @@ function renderGitHubView(activities) {
   const commits = state._ghCommits;
   const reviews = state._ghReviews;
   const merged = prs.filter(p => p.kind === 'pr_merged').length;
+  const botMerged = prs.filter(p => p.kind === 'pr_merged' && isDelegated(p)).length;
   const opened = prs.filter(p => p.kind === 'pr_opened').length;
 
   // Stats row — reorder based on workflow
@@ -1641,11 +1739,11 @@ function renderGitHubView(activities) {
         { value: commits.length, label: 'Commits' },
         { value: prs.length, label: 'Pull Requests' },
         { value: reviews.length, label: 'Reviews' },
-        { value: merged, label: 'Merged' },
+        { value: withBotShare(merged, botMerged), label: 'Merged' },
       ]
     : [
         { value: prs.length, label: 'Pull Requests' },
-        { value: merged, label: 'Merged' },
+        { value: withBotShare(merged, botMerged), label: 'Merged' },
         { value: reviews.length, label: 'Reviews' },
         { value: commits.length, label: 'Commits' },
       ];
@@ -1741,7 +1839,7 @@ async function fetchOpenPrs() {
       return `<tr>
         <td><span class="kind-badge ${statusClass}">${statusLabel}</span></td>
         <td>${ccHtml}</td>
-        <td style="max-width:400px">${pr.url ? `<a class="activity-title-link" href="${escapeAttr(pr.url)}" target="_blank">${escapeHtml(pr.title)}</a>` : escapeHtml(pr.title)}</td>
+        <td style="max-width:400px">${pr.url ? `<a class="activity-title-link" href="${escapeAttr(pr.url)}" target="_blank">${escapeHtml(pr.title)}</a>` : escapeHtml(pr.title)}${botMark(pr.delegated)}</td>
         <td><span class="project-tag">${escapeHtml(pr.repo)}</span></td>
         <td><span class="time-dim">${relativeTime(pr.updated_at)}</span></td>
       </tr>`;
@@ -1813,7 +1911,7 @@ function renderPrTable(prs, ccFilter, statusFilter) {
     return `<tr>
       <td><span class="kind-badge ${statusClass}">${statusLabel}</span></td>
       <td>${ccHtml || '<span style="color:var(--text-muted)">—</span>'}</td>
-      <td style="max-width:400px">${pr.url ? `<a class="activity-title-link" href="${escapeAttr(pr.url)}" target="_blank">${escapeHtml(pr.title)}</a>` : `<span class="activity-title-text">${escapeHtml(pr.title)}</span>`}</td>
+      <td style="max-width:400px">${pr.url ? `<a class="activity-title-link" href="${escapeAttr(pr.url)}" target="_blank">${escapeHtml(pr.title)}</a>` : `<span class="activity-title-text">${escapeHtml(pr.title)}</span>`}${botMark(pr.metadata?.delegated)}</td>
       <td>${pr.project ? `<span class="project-tag">${escapeHtml(pr.project)}</span>` : '—'}</td>
       <td><span class="time-dim">${relativeTime(pr.occurred_at)}</span></td>
     </tr>`;
@@ -2042,7 +2140,7 @@ async function openSettingsModal() {
     state.config = await invoke('get_config');
   } catch {}
   updateProfileModeUI();
-  await refreshAuthStatus();
+  await Promise.all([refreshAuthStatus(), refreshSyncStatus()]);
   renderUpdateStatus();
   renderSettingsConnections();
   renderSettingsPrefs();
@@ -2121,6 +2219,15 @@ async function renderUpdateStatus() {
   });
 }
 
+async function refreshSyncStatus() {
+  try {
+    const rows = await invoke('get_sync_status');
+    state.syncStatus = Object.fromEntries(rows.map(r => [r.source, r]));
+  } catch {
+    state.syncStatus = {};
+  }
+}
+
 function renderSettingsConnections() {
   let html = '';
   // Show disconnected-services warning inside settings
@@ -2132,12 +2239,19 @@ function renderSettingsConnections() {
   }
   for (const [source, meta] of Object.entries(SOURCE_META)) {
     const connected = state.authStatus[source];
+    // Amber when connected but the last sync failed — the token can be fine while sync isn't.
+    const sync = state.syncStatus?.[source];
+    const failing = connected && sync && !sync.ok;
+    const dotClass = !connected ? 'disconnected' : failing ? 'warning' : 'connected';
+    const dotTitle = failing ? `Last sync failed ${relativeTime(sync.at)}: ${sync.message || 'unknown error'}` : '';
     html += `<div class="auth-source">
-      <div class="auth-dot ${connected ? 'connected' : 'disconnected'}"></div>
+      <div class="auth-dot ${dotClass}" title="${escapeAttr(dotTitle)}"></div>
       <div class="auth-info">
         <div class="auth-name">${meta.label}</div>
         ${connected
-          ? '<div class="auth-helper" style="color:var(--status-completed);">Connected</div>'
+          ? (failing
+              ? `<div class="auth-helper sync-error">Connected · last sync failed ${relativeTime(sync.at)}<br><code>${escapeHtml(sync.message || 'unknown error')}</code></div>`
+              : `<div class="auth-helper" style="color:var(--status-completed);">Connected${sync ? ` · synced ${relativeTime(sync.at)}` : ''}</div>`)
           : `<div class="auth-helper">${meta.helper}</div>
              <div class="auth-input-row">
                <input type="password" class="auth-input" id="token-${source}" placeholder="${escapeAttr(meta.placeholder)}" autocomplete="off" spellcheck="false">
@@ -2324,7 +2438,9 @@ function renderSettingsPrefs() {
             state.llmCache = {};
             state.standupCache = {};
             clearBtn.textContent = 'Cleared!';
-            showToast('Cache cleared! Hit Sync to re-fetch.', 'success');
+            showToast('Cache cleared — refilling the last 12 weeks in the background', 'success');
+            state.fetchAttempted = new Set();
+            pollBackfill();
           } catch (err) {
             console.error('clear_cache failed:', err);
             showToast(`Failed to clear cache: ${err}`, 'error');
@@ -2543,10 +2659,18 @@ async function handleSync() {
   dom.syncBtn.textContent = "Syncing...";
 
   try {
-    const msg = await invoke("trigger_sync");
+    // Refresh the period being viewed, not just what's new since the last sync
+    const msg = await invoke("trigger_sync", invokeArgs());
     state.lastSyncTime = new Date();
     updateSyncTooltip();
-    showToast(msg || "Sync complete", "success");
+    await refreshSyncStatus();
+    const failed = Object.values(state.syncStatus || {}).filter(s => !s.ok);
+    if (failed.length) {
+      const names = failed.map(s => SOURCE_META[s.source]?.label || s.source).join(", ");
+      showToast(`Sync finished, but ${names} failed — see Settings → Connections`, "error");
+    } else {
+      showToast(msg || "Sync complete", "success");
+    }
     // Clear in-memory caches so summaries regenerate with fresh data
     state.llmCache = {};
     state.standupCache = {};
@@ -2922,6 +3046,17 @@ function renderVelocityChart(v) {
         pointRadius: 0, fill: false,
       });
     }
+    // Bot share of this kind, shaded under its line (a subset of the total, not added to it)
+    const botValues = v.delegated?.[kind];
+    if (botValues?.some(n => n > 0)) {
+      datasets.push({
+        label: `${labelMap[kind] || kind} 🤖`,
+        data: botValues,
+        borderColor: color + '80',
+        backgroundColor: color + '33',
+        fill: 'origin', tension: 0.3, pointRadius: 0,
+      });
+    }
   }
 
   const ctx = dom.chartVelocity.getContext('2d');
@@ -3044,9 +3179,9 @@ async function showHeatmapDetail(dow, hour, dayName) {
       const project = a.project ? escapeHtml(a.project) : '—';
       const date = new Date(a.occurred_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
-      const titleHtml = a.url
+      const titleHtml = (a.url
         ? `<a class="activity-title-link" href="${escapeAttr(a.url)}" target="_blank" title="${escapeAttr(a.title)}">${titleText}</a>`
-        : titleText;
+        : titleText) + botMark(a.metadata?.delegated);
 
       html += `<tr>
         <td><span class="kind-badge ${kindClass}">${kindLabel}</span></td>

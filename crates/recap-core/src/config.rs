@@ -209,6 +209,25 @@ pub struct GitHubConfig {
     pub username: Option<String>,
     #[serde(default)]
     pub workflow: GitHubWorkflow,
+    /// Bots that open PRs on the user's behalf (e.g. `claude[bot]`). Their PRs count as the
+    /// user's own work when the body credits the user with `Requested by <name>`.
+    #[serde(default)]
+    pub delegated_authors: Vec<DelegatedAuthor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DelegatedAuthor {
+    /// GitHub search author qualifier, e.g. `app/claude`.
+    pub author: String,
+    /// Name to match in the PR body's `Requested by <name>` line.
+    pub requested_by: String,
+}
+
+impl DelegatedAuthor {
+    /// Short marker stored on activities, e.g. `claude` for `app/claude`.
+    pub fn label(&self) -> &str {
+        self.author.rsplit('/').next().unwrap_or(&self.author)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

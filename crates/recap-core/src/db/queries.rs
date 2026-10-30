@@ -117,6 +117,74 @@ pub fn update_sync_cursor(db: &Database, source: &Source, cursor: &str) {
     .expect("failed to update sync cursor");
 }
 
+/// Outcome of the last sync attempt for a source, shown as a status light in Settings.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncStatus {
+    pub source: String,
+    pub ok: bool,
+    /// Error, or a warning for a sync that "worked" but looks wrong.
+    pub message: Option<String>,
+    pub at: String,
+}
+
+/// Records the outcome of a sync attempt for a source.
+pub fn set_sync_status(db: &Database, source: &Source, ok: bool, message: Option<&str>) {
+    let conn = db.conn.lock().unwrap();
+    let now = Utc::now().to_rfc3339();
+    if let Err(e) = conn.execute(
+        "INSERT OR REPLACE INTO sync_status (source, ok, message, at) VALUES (?1, ?2, ?3, ?4)",
+        params![source.to_string(), ok, message, now],
+    ) {
+        tracing::error!("failed to record sync status for {source}: {e}");
+    }
+}
+
+/// Returns the last sync outcome for every source that has synced.
+pub fn get_sync_statuses(db: &Database) -> rusqlite::Result<Vec<SyncStatus>> {
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn.prepare("SELECT source, ok, message, at FROM sync_status ORDER BY source")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(SyncStatus { source: row.get(0)?, ok: row.get(1)?, message: row.get(2)?, at: row.get(3)? })
+    })?;
+    rows.collect()
+}
+
+/// The UTC days touched by `since..until`, as `YYYY-MM-DD`.
+fn days_in(since: DateTime<Utc>, until: DateTime<Utc>) -> Vec<String> {
+    let mut days = Vec::new();
+    let mut day = since.date_naive();
+    while day.and_time(chrono::NaiveTime::MIN).and_utc() < until {
+        days.push(day.format("%Y-%m-%d").to_string());
+        day = day.succ_opt().expect("date overflow");
+    }
+    days
+}
+
+/// Records every day in `since..until` as fully fetched.
+pub fn mark_days_fetched(db: &Database, since: DateTime<Utc>, until: DateTime<Utc>) {
+    let conn = db.conn.lock().unwrap();
+    let now = Utc::now().to_rfc3339();
+    for day in days_in(since, until) {
+        if let Err(e) = conn.execute(
+            "INSERT OR REPLACE INTO fetched_days (day, fetched_at) VALUES (?1, ?2)",
+            params![day, now],
+        ) {
+            tracing::error!("failed to mark {day} fetched: {e}");
+        }
+    }
+}
+
+/// True if every day in `since..until` has been fetched. The last two days count as fetched:
+/// the regular incremental sync keeps them current.
+pub fn is_range_fetched(db: &Database, since: DateTime<Utc>, until: DateTime<Utc>) -> bool {
+    let recent = (Utc::now() - chrono::Duration::days(2)).format("%Y-%m-%d").to_string();
+    let conn = db.conn.lock().unwrap();
+    days_in(since, until).into_iter().filter(|d| *d < recent).all(|day| {
+        conn.query_row("SELECT 1 FROM fetched_days WHERE day = ?1", params![day], |_| Ok(()))
+            .is_ok()
+    })
+}
+
 /// Returns the stored sync cursor for a source, if one exists.
 pub fn get_sync_cursor(db: &Database, source: &Source) -> Option<String> {
     let conn = db.conn.lock().unwrap();

@@ -66,3 +66,34 @@ fn latest_sync_time_is_none_on_empty_table_and_max_after_updates() {
     assert_eq!(cursors.len(), 2);
     assert!(cursors.iter().any(|(s, c, _)| s == "github" && c == "cursor-1"));
 }
+
+#[test]
+fn fetched_days_cover_a_range_only_once_every_day_is_marked() {
+    use recap_core::db::{is_range_fetched, mark_days_fetched};
+    let db = temp_db();
+    let week = Utc.with_ymd_and_hms(2026, 2, 2, 0, 0, 0).unwrap();
+    let next_week = week + chrono::Duration::weeks(1);
+
+    assert!(!is_range_fetched(&db, week, next_week));
+
+    // Half a week isn't enough.
+    mark_days_fetched(&db, week, week + chrono::Duration::days(3));
+    assert!(!is_range_fetched(&db, week, next_week));
+    assert!(is_range_fetched(&db, week, week + chrono::Duration::days(3)));
+
+    mark_days_fetched(&db, week, next_week);
+    assert!(is_range_fetched(&db, week, next_week));
+    // A single day inside the week is covered too.
+    let wed = week + chrono::Duration::days(2);
+    assert!(is_range_fetched(&db, wed, wed + chrono::Duration::days(1)));
+    // The following week isn't.
+    assert!(!is_range_fetched(&db, next_week, next_week + chrono::Duration::weeks(1)));
+}
+
+#[test]
+fn recent_days_count_as_fetched() {
+    use recap_core::db::is_range_fetched;
+    let db = temp_db();
+    let now = Utc::now();
+    assert!(is_range_fetched(&db, now - chrono::Duration::hours(30), now));
+}

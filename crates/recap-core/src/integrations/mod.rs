@@ -4,6 +4,7 @@ pub mod notion;
 pub mod slack;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::models::Activity;
 
@@ -18,6 +19,17 @@ pub trait Integration: Send + Sync {
         &self,
         since: Option<&str>,
     ) -> Result<(Vec<Activity>, String), IntegrationError>;
+
+    /// Fetch activities that happened in `since..until`, for refreshing a past period.
+    /// The default fetches everything since `since`; the caller drops what's past `until`.
+    /// Integrations whose APIs can bound the range override this to avoid fetching up to now.
+    async fn fetch_range(
+        &self,
+        since: DateTime<Utc>,
+        _until: DateTime<Utc>,
+    ) -> Result<Vec<Activity>, IntegrationError> {
+        self.fetch_activities(Some(&since.to_rfc3339())).await.map(|(acts, _)| acts)
+    }
 }
 
 #[derive(Debug)]

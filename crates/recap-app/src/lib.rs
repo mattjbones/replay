@@ -10,7 +10,19 @@ use recap_core::sync;
 use commands::AppState;
 
 pub fn run() {
-    tracing_subscriber::fmt::init();
+    // Log to app.log beside daemon.err.log: launched from /Applications, stdout goes nowhere.
+    let log_path = config::AppConfig::config_dir().join("app.log");
+    match std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+        Ok(file) => tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(file))
+            .init(),
+        Err(_) => tracing_subscriber::fmt::init(),
+    }
 
     tracing::info!("recap starting...");
 
@@ -24,9 +36,11 @@ pub fn run() {
     );
     tracing::info!("database opened");
 
+    let backfill = Arc::new(std::sync::Mutex::new(commands::BackfillStatus::default()));
     let state = AppState {
         db: db.clone(),
         config: std::sync::Mutex::new(config.clone()),
+        backfill: backfill.clone(),
     };
 
     tracing::info!("building tauri app...");
@@ -59,6 +73,9 @@ pub fn run() {
                 scheduler.start().await;
             });
 
+            // Fill in any history gaps (weeks already fetched are skipped).
+            commands::start_backfill(db.clone(), config.clone(), backfill.clone());
+
             // Start daily reminder notifications.
             let reminder_handle = app.handle().clone();
             let reminder_db = db.clone();
@@ -71,6 +88,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_digest,
             commands::get_auth_status,
+            commands::get_sync_status,
+            commands::get_backfill_status,
+            commands::is_period_fetched,
             commands::save_token,
             commands::save_slack_refresh_token,
             commands::save_anthropic_key,

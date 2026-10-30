@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::auth::AuthManager;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, DelegatedAuthor};
 use crate::models::{Activity, ActivityKind, Source};
 
 use super::{Integration, IntegrationError};
@@ -76,6 +76,28 @@ fn since_or_default(since: Option<DateTime<Utc>>, days: i64) -> String {
         .unwrap_or_else(|| Utc::now() - chrono::Duration::days(days))
         .format("%Y-%m-%dT%H:%M:%S")
         .to_string()
+}
+
+/// Split `since..now` into `updated:` qualifiers for the Search API, which returns at most
+/// 1000 results per query. 30-day windows keep each query under that cap; the last window
+/// is open-ended so nothing updated during the sync slips through.
+fn search_windows(since: DateTime<Utc>, now: DateTime<Utc>) -> Vec<String> {
+    const FMT: &str = "%Y-%m-%dT%H:%M:%S";
+    let step = chrono::Duration::days(30);
+    let mut windows = Vec::new();
+    let mut start = since;
+    while start + step < now {
+        windows.push(format!("{}..{}", start.format(FMT), (start + step).format(FMT)));
+        start += step;
+    }
+    windows.push(format!("{}..*", start.format(FMT)));
+    windows
+}
+
+/// `updated:` qualifiers covering `since` (default 90 days ago) up to now.
+fn updated_windows(since: Option<DateTime<Utc>>) -> Vec<String> {
+    let since = since.unwrap_or_else(|| Utc::now() - chrono::Duration::days(90));
+    search_windows(since, Utc::now()).into_iter().map(|w| format!("updated:{w}")).collect()
 }
 
 /// Extract `"owner/repo"` from a GitHub API `repository_url`
@@ -168,11 +190,18 @@ async fn rate_limited_get(
     url: &str,
     context: &str,
 ) -> Result<reqwest::Response, IntegrationError> {
+    rate_limited_send(|| client.get(url), context).await
+}
+
+/// Same as [`rate_limited_get`] for any request; `build` is called again on each retry.
+async fn rate_limited_send(
+    build: impl Fn() -> reqwest::RequestBuilder,
+    context: &str,
+) -> Result<reqwest::Response, IntegrationError> {
     let mut retries = 0u32;
 
     loop {
-        let response = client
-            .get(url)
+        let response = build()
             .send()
             .await
             .map_err(|e| IntegrationError::Network(e.to_string()))?;
@@ -245,6 +274,7 @@ pub struct GitHubIntegration {
     #[allow(dead_code)]
     token: String,
     username: String,
+    delegated_authors: Vec<DelegatedAuthor>,
 }
 
 impl GitHubIntegration {
@@ -273,6 +303,7 @@ impl GitHubIntegration {
             client,
             token,
             username,
+            delegated_authors: config.github.delegated_authors.clone(),
         })
     }
 }
@@ -380,8 +411,23 @@ impl Integration for GitHubIntegration {
         }
 
         // Supplement with authored PRs (catches merges by Graphite, bots, etc.)
-        let pr_activities = self.fetch_authored_prs(since_dt).await.unwrap_or_else(|e| {
+        let updated = updated_windows(since_dt);
+        let mut pr_activities = self.fetch_authored_prs(&updated, None).await.unwrap_or_else(|e| {
             tracing::warn!("github: failed to fetch authored PRs: {e}");
+            Vec::new()
+        });
+
+        // PRs bots opened on the user's behalf count as the user's own work.
+        for delegate in &self.delegated_authors {
+            match self.fetch_authored_prs(&updated, Some(delegate)).await {
+                Ok(acts) => pr_activities.extend(acts),
+                Err(e) => tracing::warn!("github: failed to fetch {} PRs: {e}", delegate.author),
+            }
+        }
+
+        // Reviews come from the Search API too: the events feed only reaches back ~300 events.
+        let review_activities = self.fetch_reviews(since_dt, None).await.unwrap_or_else(|e| {
+            tracing::warn!("github: failed to fetch reviews: {e}");
             Vec::new()
         });
 
@@ -396,7 +442,7 @@ impl Integration for GitHubIntegration {
             .iter()
             .map(|a| a.source_id.clone())
             .collect();
-        for activity in pr_activities.into_iter().chain(issue_activities) {
+        for activity in pr_activities.into_iter().chain(review_activities).chain(issue_activities) {
             if !existing_ids.contains(&activity.source_id) {
                 if latest_cursor.is_none() || Some(activity.occurred_at.to_rfc3339()) > latest_cursor {
                     latest_cursor = Some(activity.occurred_at.to_rfc3339());
@@ -413,44 +459,85 @@ impl Integration for GitHubIntegration {
 
         Ok((all_activities, cursor))
     }
+
+    async fn fetch_range(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<Activity>, IntegrationError> {
+        self.fetch_range_impl(since, until).await
+    }
 }
 
 impl GitHubIntegration {
+    /// PRs created or closed in the range, plus reviews and involved issues. The events feed
+    /// (commits, issue events) can't reach back, so it's skipped.
+    async fn fetch_range_impl(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<Activity>, IntegrationError> {
+        const FMT: &str = "%Y-%m-%dT%H:%M:%S";
+        let range = format!("{}..{}", since.format(FMT), until.format(FMT));
+        let qualifiers = [format!("created:{range}"), format!("closed:{range}")];
+
+        let mut activities = self.fetch_authored_prs(&qualifiers, None).await?;
+        for delegate in &self.delegated_authors {
+            activities.extend(self.fetch_authored_prs(&qualifiers, Some(delegate)).await?);
+        }
+        activities.extend(self.fetch_reviews(Some(since), Some(until)).await?);
+        activities.extend(self.fetch_involved_issues(Some(since)).await?);
+        Ok(activities)
+    }
+
     /// Fetch PRs authored by the user via the Search API.
     /// This catches PRs merged by Graphite or other bots that don't appear in the events feed.
+    /// With `delegate`, fetches PRs that bot opened on the user's behalf instead, tagging each
+    /// activity with `metadata.delegated`.
+    /// `qualifiers` are date filters (e.g. `updated:A..B`), one search per entry.
     async fn fetch_authored_prs(
         &self,
-        since: Option<DateTime<Utc>>,
+        qualifiers: &[String],
+        delegate: Option<&DelegatedAuthor>,
     ) -> Result<Vec<Activity>, IntegrationError> {
-        let since_str = since_or_default(since, 90);
+        let mut items: Vec<serde_json::Value> = Vec::new();
+        for qualifier in qualifiers {
+            let query = match delegate {
+                Some(d) => delegated_pr_query(d, qualifier),
+                None => format!("author:{} type:pr {qualifier}", self.username),
+            };
+            // The Search API serves at most 10 pages of 100.
+            for page in 1..=10 {
+                let url = format!(
+                    "https://api.github.com/search/issues?q={}&sort=updated&order=desc&per_page=100&page={page}",
+                    urlencoding::encode(&query)
+                );
 
-        let query = format!(
-            "author:{} type:pr updated:>{}",
-            self.username, since_str
-        );
-        let url = format!(
-            "https://api.github.com/search/issues?q={}&sort=updated&order=desc&per_page=100",
-            urlencoding::encode(&query)
-        );
+                let response = rate_limited_get(&self.client, &url, "search authored PRs").await?;
 
-        let response = rate_limited_get(&self.client, &url, "search authored PRs").await?;
+                if !response.status().is_success() {
+                    let body = response.text().await.unwrap_or_default();
+                    return Err(IntegrationError::Network(format!(
+                        "GitHub search returned {body}"
+                    )));
+                }
 
-        if !response.status().is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(IntegrationError::Network(format!(
-                "GitHub search returned {body}"
-            )));
+                let json: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| IntegrationError::Parse(e.to_string()))?;
+
+                let page_items = json["items"].as_array().cloned().unwrap_or_default();
+                let full_page = page_items.len() == 100;
+                items.extend(page_items);
+                if !full_page {
+                    break;
+                }
+            }
         }
-
-        let json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| IntegrationError::Parse(e.to_string()))?;
-
-        let empty_vec = Vec::new();
-        let items = json["items"]
-            .as_array()
-            .unwrap_or(&empty_vec);
+        let mut seen = std::collections::HashSet::new();
+        items.retain(|i| seen.insert(i["html_url"].as_str().unwrap_or_default().to_string()));
+        let items = &items;
 
         // First pass: parse items and identify which closed PRs need Graphite checks
         struct PrCandidate {
@@ -465,6 +552,12 @@ impl GitHubIntegration {
 
         let mut candidates: Vec<PrCandidate> = Vec::new();
         for item in items {
+            // `in:body` search is fuzzy; only keep bot PRs that really credit the user.
+            if let Some(d) = delegate {
+                if !body_credits(item["body"].as_str().unwrap_or_default(), &d.requested_by) {
+                    continue;
+                }
+            }
             let number = item["number"].as_u64().unwrap_or(0);
             let title = item["title"].as_str().unwrap_or("Untitled PR").to_string();
             let html_url = item["html_url"].as_str().unwrap_or_default().to_string();
@@ -483,7 +576,7 @@ impl GitHubIntegration {
             .take(20)
             .collect();
 
-        let mut graphite_closed: std::collections::HashMap<u64, DateTime<Utc>> =
+        let mut graphite_closed: std::collections::HashMap<(String, u64), DateTime<Utc>> =
             std::collections::HashMap::new();
 
         if !closed_prs.is_empty() {
@@ -495,13 +588,13 @@ impl GitHubIntegration {
                 let number = c.number;
                 join_set.spawn(async move {
                     let closed_at = fetch_graphite_merge_time(&client, &repo, number).await;
-                    (number, closed_at)
+                    (repo, number, closed_at)
                 });
             }
             while let Some(result) = join_set.join_next().await {
-                if let Ok((number, Some(closed_at))) = result {
+                if let Ok((repo, number, Some(closed_at))) = result {
                     tracing::info!("github: PR #{number} detected as Graphite merge at {closed_at}");
-                    graphite_closed.insert(number, closed_at);
+                    graphite_closed.insert((repo, number), closed_at);
                 }
             }
         }
@@ -512,7 +605,7 @@ impl GitHubIntegration {
             let Some((kind, occurred_at)) = classify_authored_pr(
                 &c.state,
                 c.merged_at,
-                graphite_closed.get(&c.number).copied(),
+                graphite_closed.get(&(c.repo_name.clone(), c.number)).copied(),
                 c.updated_at,
             ) else {
                 continue;
@@ -535,11 +628,89 @@ impl GitHubIntegration {
                 "cc_type": cc_type,
                 "cc_scope": cc_scope,
             });
+            if let Some(d) = delegate {
+                activity.metadata["delegated"] = serde_json::json!(d.label());
+            }
 
             activities.push(activity);
         }
 
-        tracing::info!("github: found {} authored PRs via search", activities.len());
+        let who = delegate.map_or("authored", |d| d.author.as_str());
+        tracing::info!("github: found {} {who} PRs via search", activities.len());
+        Ok(activities)
+    }
+
+    /// Fetch the user's PR reviews via GraphQL: each search page returns 100 PRs together with
+    /// the user's reviews on them, so the whole range costs a handful of requests.
+    /// With `until`, only reviews before it are kept and PRs created after it are skipped
+    /// (search can't filter by review date, so the window still runs up to now).
+    async fn fetch_reviews(
+        &self,
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<Vec<Activity>, IntegrationError> {
+        const QUERY: &str = r#"
+query($q: String!, $after: String, $login: String!) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {
+        number title url
+        repository { nameWithOwner }
+        reviews(author: $login, first: 100) { nodes { submittedAt state } }
+      }
+    }
+  }
+}"#;
+        let since = since.unwrap_or_else(|| Utc::now() - chrono::Duration::days(90));
+        // Rebuild whole days, so a later review on an already-synced day keeps that day's
+        // first review time rather than replacing it.
+        let day_start = since.date_naive().and_time(chrono::NaiveTime::MIN).and_utc();
+
+        let mut activities = Vec::new();
+        for window in search_windows(since, Utc::now()) {
+            let mut q = format!("reviewed-by:{} type:pr updated:{window}", self.username);
+            if let Some(until) = until {
+                q.push_str(&format!(" created:<{}", until.format("%Y-%m-%dT%H:%M:%S")));
+            }
+            let mut after: Option<String> = None;
+            loop {
+                let body = serde_json::json!({
+                    "query": QUERY,
+                    "variables": { "q": q, "after": after, "login": self.username },
+                });
+                let response = rate_limited_send(
+                    || self.client.post("https://api.github.com/graphql").json(&body),
+                    "graphql reviews",
+                ).await?;
+
+                if !response.status().is_success() {
+                    let text = response.text().await.unwrap_or_default();
+                    return Err(IntegrationError::Network(format!("GitHub GraphQL returned {text}")));
+                }
+                let json: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| IntegrationError::Parse(e.to_string()))?;
+                if let Some(errors) = json.get("errors") {
+                    return Err(IntegrationError::Parse(format!("GitHub GraphQL errors: {errors}")));
+                }
+
+                let search = &json["data"]["search"];
+                for pr in search["nodes"].as_array().into_iter().flatten() {
+                    activities.extend(review_activities(pr, day_start)
+                        .into_iter()
+                        .filter(|a| until.is_none_or(|u| a.occurred_at < u)));
+                }
+
+                if !search["pageInfo"]["hasNextPage"].as_bool().unwrap_or(false) {
+                    break;
+                }
+                after = search["pageInfo"]["endCursor"].as_str().map(str::to_string);
+            }
+        }
+
+        tracing::info!("github: found {} review-days via GraphQL", activities.len());
         Ok(activities)
     }
 
@@ -665,6 +836,69 @@ impl GitHubIntegration {
 }
 
 /// Parse an optional RFC 3339 timestamp from a JSON value.
+/// Turn one GraphQL PullRequest node (with the user's reviews) into `PrReviewed` activities:
+/// one per PR per day, at the day's first review, carrying that day's final review state.
+/// Reviews before `since` are dropped.
+fn review_activities(pr: &serde_json::Value, since: DateTime<Utc>) -> Vec<Activity> {
+    let Some(number) = pr["number"].as_u64() else { return Vec::new() };
+    let repo = pr["repository"]["nameWithOwner"].as_str().unwrap_or_default();
+    let title = pr["title"].as_str().unwrap_or("Untitled PR");
+    let url = pr["url"].as_str().unwrap_or_default();
+
+    // day -> (first review time, last review time, last state)
+    let mut days: std::collections::BTreeMap<String, (DateTime<Utc>, DateTime<Utc>, String)> =
+        std::collections::BTreeMap::new();
+    for review in pr["reviews"]["nodes"].as_array().into_iter().flatten() {
+        let Some(at) = parse_datetime(review.get("submittedAt")) else { continue };
+        if at < since {
+            continue;
+        }
+        let state = review["state"].as_str().unwrap_or("unknown").to_string();
+        days.entry(at.format("%Y-%m-%d").to_string())
+            .and_modify(|(first, last, s)| {
+                if at < *first { *first = at; }
+                if at >= *last { *last = at; *s = state.clone(); }
+            })
+            .or_insert((at, at, state));
+    }
+
+    days.into_iter().map(|(day, (first, _, state))| {
+        let mut activity = Activity::new(
+            Source::GitHub,
+            format!("review:{repo}:{number}:{day}"),
+            ActivityKind::PrReviewed,
+            format!("Reviewed: {title} in {repo}"),
+            url.to_string(),
+            first,
+        );
+        activity.project = Some(repo.to_string());
+        activity.metadata = serde_json::json!({ "pr_number": number, "review_state": state });
+        activity
+    }).collect()
+}
+
+/// True if a delegated bot's PR body credits `name` with a `Requested by <name>` line.
+/// Markdown emphasis is ignored, and the name must end at a word boundary so
+/// "Jane Smith" doesn't match "Jane Smith-Jones".
+fn body_credits(body: &str, name: &str) -> bool {
+    let plain: String = body.chars().filter(|c| *c != '*' && *c != '_').collect::<String>().to_lowercase();
+    let needle = format!("requested by {}", name.trim().to_lowercase());
+    plain.match_indices(&needle).any(|(i, m)| {
+        plain[i + m.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '-'))
+    })
+}
+
+/// Search query for PRs a delegated bot opened on the user's behalf.
+fn delegated_pr_query(delegate: &DelegatedAuthor, rest: &str) -> String {
+    format!(
+        "author:{} type:pr in:body \"Requested by {}\" {rest}",
+        delegate.author, delegate.requested_by
+    )
+}
+
 fn parse_datetime(value: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
     value?.as_str()?.parse().ok()
 }
@@ -791,11 +1025,9 @@ fn parse_conventional_commit(title: &str) -> (Option<String>, Option<String>) {
 fn parse_event(event: &GitHubEvent, occurred_at: DateTime<Utc>) -> Vec<Activity> {
     match event.event_type.as_str() {
         "PushEvent" => parse_push_event(event, occurred_at),
-        // PullRequestEvent skipped — Search API (fetch_authored_prs) is the
-        // single source of truth for PR status, including Graphite merges.
-        "PullRequestReviewEvent" => parse_pull_request_review_event(event, occurred_at)
-            .into_iter()
-            .collect(),
+        // PullRequestEvent and PullRequestReviewEvent skipped — the Search API
+        // (fetch_authored_prs, fetch_reviews) is the single source of truth for PRs and
+        // reviews, and reaches back further than the events feed.
         "IssuesEvent" => parse_issues_event(event, occurred_at)
             .into_iter()
             .collect(),
@@ -867,61 +1099,6 @@ fn parse_push_event(event: &GitHubEvent, occurred_at: DateTime<Utc>) -> Vec<Acti
 }
 
 // parse_pull_request_event removed — Search API handles all PR status
-
-fn parse_pull_request_review_event(
-    event: &GitHubEvent,
-    occurred_at: DateTime<Utc>,
-) -> Option<Activity> {
-    let payload = &event.payload;
-    let pr = payload.get("pull_request")?;
-
-    let pr_number = payload
-        .get("number")
-        .and_then(|n| n.as_u64())
-        .or_else(|| pr.get("number").and_then(|n| n.as_u64()));
-
-    let pr_title = pr
-        .get("title")
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            match pr_number {
-                Some(n) => format!("PR #{n}", ),
-                None => "a PR".to_string(),
-            }
-        });
-    let title = format!("Reviewed: {pr_title} in {}", event.repo.name);
-    let url = pr
-        .get("html_url")
-        .and_then(|u| u.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            match pr_number {
-                Some(n) => format!("https://github.com/{}/pull/{n}", event.repo.name),
-                None => format!("https://github.com/{}", event.repo.name),
-            }
-        });
-
-    let review_state = payload
-        .get("review")
-        .and_then(|r| r.get("state"))
-        .and_then(|s| s.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-
-    let mut activity = Activity::new(
-        Source::GitHub,
-        event.id.clone(),
-        ActivityKind::PrReviewed,
-        title,
-        url,
-        occurred_at,
-    );
-    activity.project = Some(event.repo.name.clone());
-    activity.metadata = serde_json::json!({ "review_state": review_state });
-
-    Some(activity)
-}
 
 fn parse_issues_event(
     event: &GitHubEvent,
@@ -1013,20 +1190,39 @@ pub struct OpenPr {
     pub deletions: u64,
     pub cc_type: Option<String>,
     pub cc_scope: Option<String>,
+    /// Bot label (e.g. `claude`) when a delegated bot opened this PR on the user's behalf.
+    pub delegated: Option<String>,
 }
 
-/// Fetch all open and draft PRs authored by the configured user.
+/// Fetch all open and draft PRs authored by the configured user, plus those delegated bots
+/// opened on their behalf.
 pub async fn fetch_open_prs(config: &crate::config::AppConfig) -> Result<Vec<OpenPr>, String> {
     let (client, username_owned) = github_authenticated_client(config)?;
     let username = username_owned.as_str();
 
-    let query = format!("author:{username} type:pr state:open");
+    let mut prs = search_open_prs(&client, &format!("author:{username} type:pr state:open"), None).await?;
+    for delegate in &config.github.delegated_authors {
+        let query = delegated_pr_query(delegate, "state:open");
+        match search_open_prs(&client, &query, Some(delegate)).await {
+            Ok(more) => prs.extend(more),
+            Err(e) => tracing::warn!("github: failed to fetch open {} PRs: {e}", delegate.author),
+        }
+    }
+    prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(prs)
+}
+
+async fn search_open_prs(
+    client: &reqwest::Client,
+    query: &str,
+    delegate: Option<&DelegatedAuthor>,
+) -> Result<Vec<OpenPr>, String> {
     let url = format!(
         "https://api.github.com/search/issues?q={}&sort=updated&order=desc&per_page=100",
-        urlencoding::encode(&query)
+        urlencoding::encode(query)
     );
 
-    let response = rate_limited_get_simple(&client, &url, "search open PRs").await?;
+    let response = rate_limited_get_simple(client, &url, "search open PRs").await?;
 
     if !response.status().is_success() {
         let text = response.text().await.unwrap_or_default();
@@ -1042,6 +1238,11 @@ pub async fn fetch_open_prs(config: &crate::config::AppConfig) -> Result<Vec<Ope
     let mut prs: Vec<OpenPr> = Vec::new();
 
     for item in items {
+        if let Some(d) = delegate {
+            if !body_credits(item["body"].as_str().unwrap_or_default(), &d.requested_by) {
+                continue;
+            }
+        }
         let number = item["number"].as_u64().unwrap_or(0);
         let title = item["title"].as_str().unwrap_or("Untitled").to_string();
         let html_url = item["html_url"].as_str().unwrap_or_default().to_string();
@@ -1078,6 +1279,7 @@ pub async fn fetch_open_prs(config: &crate::config::AppConfig) -> Result<Vec<Ope
             deletions: 0,
             cc_type,
             cc_scope,
+            delegated: delegate.map(|d| d.label().to_string()),
         });
     }
 
@@ -1176,6 +1378,65 @@ mod tests {
 
     fn ts(s: &str) -> DateTime<Utc> {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn search_windows_split_range_into_30_day_chunks() {
+        let since = ts("2026-07-01T00:00:00Z");
+        let now = ts("2026-09-15T12:00:00Z");
+        let w = search_windows(since, now);
+        assert_eq!(w, vec![
+            "2026-07-01T00:00:00..2026-07-31T00:00:00".to_string(),
+            "2026-07-31T00:00:00..2026-08-30T00:00:00".to_string(),
+            "2026-08-30T00:00:00..*".to_string(),
+        ]);
+        // A short range is a single open-ended window.
+        assert_eq!(search_windows(ts("2026-09-14T08:00:00Z"), now), vec!["2026-09-14T08:00:00..*".to_string()]);
+    }
+
+    #[test]
+    fn review_activities_counts_each_pr_once_per_day() {
+        let pr = json!({
+            "number": 7,
+            "title": "fix: thing",
+            "url": "https://github.com/acme/app/pull/7",
+            "repository": { "nameWithOwner": "acme/app" },
+            "reviews": { "nodes": [
+                { "submittedAt": "2026-10-28T09:00:00Z", "state": "COMMENTED" },
+                { "submittedAt": "2026-10-28T15:00:00Z", "state": "APPROVED" },
+                { "submittedAt": "2026-10-29T10:00:00Z", "state": "COMMENTED" },
+                { "submittedAt": "2026-10-01T10:00:00Z", "state": "COMMENTED" },
+            ]}
+        });
+        let acts = review_activities(&pr, ts("2026-10-20T00:00:00Z"));
+        let mut ids: Vec<(&str, DateTime<Utc>, &str)> = acts.iter()
+            .map(|a| (a.source_id.as_str(), a.occurred_at, a.metadata["review_state"].as_str().unwrap()))
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![
+            ("review:acme/app:7:2026-10-28", ts("2026-10-28T09:00:00Z"), "APPROVED"),
+            ("review:acme/app:7:2026-10-29", ts("2026-10-29T10:00:00Z"), "COMMENTED"),
+        ]);
+        assert_eq!(acts[0].kind, ActivityKind::PrReviewed);
+        assert_eq!(acts[0].title, "Reviewed: fix: thing in acme/app");
+    }
+
+    #[test]
+    fn body_credits_matches_claude_attribution_line() {
+        let body = "<!-- claude-slack-attribution -->\n_Requested by **Jane Smith-Jones** · [Slack thread](https://x)_\n\n## Problem";
+        assert!(body_credits(body, "Jane Smith-Jones"));
+        assert!(body_credits(body, "jane smith-jones"));
+    }
+
+    #[test]
+    fn body_credits_rejects_other_requesters_and_loose_mentions() {
+        let other = "_Requested by **Jane Smith** · [Slack thread](https://x)_";
+        assert!(!body_credits(other, "Jane Smith-Jones"));
+        let mention = "Thanks Jane Smith-Jones for the idea";
+        assert!(!body_credits(mention, "Jane Smith-Jones"));
+        // A longer name sharing the configured name as a prefix is someone else.
+        let prefix = "_Requested by **Jane Smith-Jonesy**_";
+        assert!(!body_credits(prefix, "Jane Smith-Jones"));
     }
 
     #[test]

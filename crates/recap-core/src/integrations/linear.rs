@@ -10,12 +10,12 @@ use super::{Integration, IntegrationError};
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
 
 const ISSUES_QUERY: &str = r#"
-query($after: String, $since: DateTimeOrDuration) {
+query($after: String, $since: DateTimeOrDuration, $until: DateTimeOrDuration!) {
   viewer {
     assignedIssues(
       first: 50
       after: $after
-      filter: { updatedAt: { gte: $since } }
+      filter: { updatedAt: { gte: $since, lt: $until } }
       orderBy: updatedAt
     ) {
       pageInfo { hasNextPage endCursor }
@@ -64,8 +64,10 @@ impl LinearIntegration {
         &self,
         after: Option<&str>,
         since: Option<&str>,
+        until: DateTime<Utc>,
     ) -> Result<serde_json::Value, IntegrationError> {
         let mut variables = serde_json::Map::new();
+        variables.insert("until".to_string(), serde_json::Value::String(until.to_rfc3339()));
         if let Some(cursor) = after {
             variables.insert("after".to_string(), serde_json::Value::String(cursor.to_string()));
         }
@@ -149,13 +151,33 @@ impl Integration for LinearIntegration {
         &self,
         since: Option<&str>,
     ) -> Result<(Vec<Activity>, String), IntegrationError> {
+        // Open-ended: a day ahead covers clock skew.
+        self.fetch_between(since, Utc::now() + chrono::Duration::days(1)).await
+    }
+
+    async fn fetch_range(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<Activity>, IntegrationError> {
+        self.fetch_between(Some(&since.to_rfc3339()), until).await.map(|(acts, _)| acts)
+    }
+}
+
+impl LinearIntegration {
+    /// Fetch assigned issues updated in `since..until`.
+    async fn fetch_between(
+        &self,
+        since: Option<&str>,
+        until: DateTime<Utc>,
+    ) -> Result<(Vec<Activity>, String), IntegrationError> {
         let mut all_activities: Vec<Activity> = Vec::new();
         let mut oldest_updated_at: Option<String> = None;
         let mut after_cursor: Option<String> = None;
 
         loop {
             let json = self
-                .execute_query(after_cursor.as_deref(), since)
+                .execute_query(after_cursor.as_deref(), since, until)
                 .await?;
 
             let assigned_issues = &json["data"]["viewer"]["assignedIssues"];
