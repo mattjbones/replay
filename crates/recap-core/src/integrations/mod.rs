@@ -8,6 +8,9 @@ use chrono::{DateTime, Utc};
 
 use crate::models::Activity;
 
+// async_trait marks the boxed future of a default method `must_use` on top of the
+// fn's own, which newer clippy flags as `double_must_use`.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Integration: Send + Sync {
     /// Returns the source this integration fetches from.
