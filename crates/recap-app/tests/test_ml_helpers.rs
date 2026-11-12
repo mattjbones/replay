@@ -1,5 +1,5 @@
 use recap_app::commands::{
-    build_off_hours_rows, detect_anomalies, holt_winters_forecast, kmeans, linear_regression,
+    build_off_hours_rows, classify_days, detect_anomalies, holt_winters_forecast, kmeans, linear_regression,
     naive_bayes_predict,
 };
 use recap_core::config::WorkingHoursConfig;
@@ -270,4 +270,44 @@ fn off_hours_respects_timezone_conversion() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].1, 2);
     assert_eq!(rows[0].2, 1);
+}
+
+// ---------------------------------------------------------------------------
+// classify_days
+// ---------------------------------------------------------------------------
+
+/// Message volume dwarfs PR counts in raw units; clusters must still be named by what makes
+/// them distinctive, not by whichever dimension has the biggest raw numbers.
+#[test]
+fn classify_days_is_not_dominated_by_high_volume_dimension() {
+    let dims = ["PRs", "Comms"];
+    let mut data = Vec::new();
+    for _ in 0..10 { data.push(vec![5.0, 20.0]); } // build-heavy days, still chatty
+    for _ in 0..10 { data.push(vec![0.0, 60.0]); } // pure comms days
+    for _ in 0..10 { data.push(vec![0.0, 2.0]); }  // quiet days
+    let (assignments, names, _) = classify_days(&data, &dims, 3);
+    assert_eq!(assignments.len(), 30);
+    let name_of = |i: usize| names[assignments[i]].clone();
+    assert_eq!(name_of(0), "PRs Day");
+    assert_eq!(name_of(10), "Comms Day");
+    assert_eq!(name_of(20), "Light Day");
+}
+
+#[test]
+fn classify_days_names_are_unique() {
+    let dims = ["PRs", "Comms"];
+    let data: Vec<Vec<f64>> = (0..30).map(|i| vec![0.0, i as f64]).collect();
+    let (_, names, _) = classify_days(&data, &dims, 3);
+    let mut sorted = names.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), names.len(), "duplicate cluster names: {names:?}");
+}
+
+#[test]
+fn classify_days_centroids_are_in_raw_units() {
+    let dims = ["PRs", "Comms"];
+    let data = vec![vec![4.0, 10.0], vec![4.0, 10.0]];
+    let (_, _, centroids) = classify_days(&data, &dims, 1);
+    assert_eq!(centroids, vec![vec![4.0, 10.0]]);
 }

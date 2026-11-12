@@ -224,6 +224,28 @@ struct SlackChannel {
     id: String,
     #[serde(default)]
     name: String,
+    #[serde(default)]
+    is_im: bool,
+    #[serde(default)]
+    is_mpim: bool,
+}
+
+impl SlackChannel {
+    /// Human label for the conversation. Search results give a DM's "name" as the other
+    /// user's raw ID (e.g. `U0123ABCD`), which is meaningless in the UI.
+    fn label(&self) -> String {
+        if self.is_im || self.is_mpim || looks_like_user_id(&self.name) {
+            "Direct messages".to_string()
+        } else {
+            format!("#{}", self.name)
+        }
+    }
+}
+
+fn looks_like_user_id(name: &str) -> bool {
+    name.len() >= 9
+        && (name.starts_with('U') || name.starts_with('W'))
+        && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
 }
 
 /// First `max` characters of `text` plus "..." if it was longer. Counts chars, not bytes:
@@ -448,9 +470,9 @@ impl SlackIntegration {
                 };
 
                 let title = if is_thread_reply {
-                    format!("Reply in #{}", msg.channel.name)
+                    format!("Reply in {}", msg.channel.label())
                 } else {
-                    format!("Message in #{}", msg.channel.name)
+                    format!("Message in {}", msg.channel.label())
                 };
 
                 let source_id = msg
@@ -475,7 +497,7 @@ impl SlackIntegration {
                     activity.description = Some(desc);
                 }
 
-                activity.project = Some(msg.channel.name.clone());
+                activity.project = Some(msg.channel.label().trim_start_matches('#').to_string());
 
                 activity.metadata = serde_json::json!({
                     "channel_id": msg.channel.id,
@@ -513,7 +535,19 @@ impl SlackIntegration {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_chars;
+    use super::{truncate_chars, SlackChannel};
+
+    fn chan(name: &str, is_im: bool) -> SlackChannel {
+        SlackChannel { id: "C1".into(), name: name.into(), is_im, is_mpim: false }
+    }
+
+    #[test]
+    fn dm_channels_are_labelled_not_raw_user_ids() {
+        assert_eq!(chan("U0BV0CD22CF", false).label(), "Direct messages");
+        assert_eq!(chan("someone", true).label(), "Direct messages");
+        assert_eq!(chan("engineers", false).label(), "#engineers");
+        assert_eq!(chan("UPPERCASE-CHANNEL", false).label(), "#UPPERCASE-CHANNEL");
+    }
 
     #[test]
     fn truncate_chars_never_splits_a_multibyte_character() {

@@ -308,7 +308,7 @@ pub fn query_cycle_times(
     rows.collect()
 }
 
-/// Weekly project distribution.
+/// Weekly project distribution. Slack is excluded: its "project" is a channel or DM, not work.
 pub fn query_project_distribution(
     db: &Database,
     since: DateTime<Utc>,
@@ -318,7 +318,7 @@ pub fn query_project_distribution(
         "SELECT strftime('%Y-W%W', occurred_at) AS week,
                 COALESCE(project, 'Other') AS proj,
                 COUNT(*) AS cnt
-         FROM activities WHERE occurred_at >= ?1
+         FROM activities WHERE occurred_at >= ?1 AND source != 'slack'
          GROUP BY week, proj ORDER BY week, cnt DESC",
     )?;
     let rows = stmt.query_map(params![since.to_rfc3339()], |row| {
@@ -386,6 +386,7 @@ pub fn query_daily_vectors(
 }
 
 /// Day-of-week project activity: (dow 0-6, project, count) for next-day prediction.
+/// Slack is excluded: its "project" is a channel or DM (raw user ID), not work.
 pub fn query_dow_project(
     db: &Database,
     since: DateTime<Utc>,
@@ -395,7 +396,7 @@ pub fn query_dow_project(
         "SELECT CAST(strftime('%w', occurred_at) AS INTEGER) AS dow,
                 COALESCE(project, 'Other') AS proj,
                 COUNT(*) AS cnt
-         FROM activities WHERE occurred_at >= ?1
+         FROM activities WHERE occurred_at >= ?1 AND source != 'slack'
          GROUP BY dow, proj",
     )?;
     let rows = stmt.query_map(params![since.to_rfc3339()], |row| {
