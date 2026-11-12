@@ -843,6 +843,82 @@ pub fn kmeans(data: &[Vec<f64>], k: usize, max_iter: usize) -> (Vec<usize>, Vec<
     (assignments, centroids)
 }
 
+/// Cluster days into `k` work-day types and name each cluster.
+///
+/// Dimensions live on very different scales (a day might have 1 merged PR and 60 Slack
+/// messages), so clustering raw counts lets the highest-volume dimension decide everything.
+/// Each dimension is z-scored first; a cluster is named after the dimension where its centroid
+/// sits furthest above the average day, or "Light Day" if it is below average everywhere.
+/// Returns (assignments, unique cluster names, centroids in raw units).
+pub fn classify_days(
+    data: &[Vec<f64>],
+    dim_names: &[&str],
+    k: usize,
+) -> (Vec<usize>, Vec<String>, Vec<Vec<f64>>) {
+    if data.is_empty() || dim_names.is_empty() { return (Vec::new(), Vec::new(), Vec::new()); }
+    let dim = dim_names.len();
+    let n = data.len() as f64;
+    let means: Vec<f64> = (0..dim).map(|d| data.iter().map(|p| p[d]).sum::<f64>() / n).collect();
+    let stds: Vec<f64> = (0..dim).map(|d| {
+        (data.iter().map(|p| (p[d] - means[d]).powi(2)).sum::<f64>() / n).sqrt()
+    }).collect();
+    let z = |d: usize, v: f64| if stds[d] > 0.0 { (v - means[d]) / stds[d] } else { 0.0 };
+    let scaled: Vec<Vec<f64>> = data.iter()
+        .map(|p| (0..dim).map(|d| z(d, p[d])).collect())
+        .collect();
+
+    let (assignments, _) = kmeans(&scaled, k, 50);
+    let n_clusters = assignments.iter().copied().max().map_or(0, |m| m + 1);
+
+    // Raw-unit centroids for display; z-space centroids for naming.
+    let mut raw_centroids = vec![vec![0.0; dim]; n_clusters];
+    let mut counts = vec![0usize; n_clusters];
+    for (p, &a) in data.iter().zip(&assignments) {
+        counts[a] += 1;
+        for d in 0..dim { raw_centroids[a][d] += p[d]; }
+    }
+    for (c, &cnt) in raw_centroids.iter_mut().zip(&counts) {
+        if cnt > 0 { for v in c.iter_mut() { *v /= cnt as f64; } }
+    }
+    let z_centroids: Vec<Vec<f64>> = raw_centroids.iter()
+        .map(|c| (0..dim).map(|d| z(d, c[d])).collect())
+        .collect();
+
+    let base: Vec<String> = z_centroids.iter().map(|c| {
+        let (idx, max) = c.iter().copied().enumerate()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or((0, 0.0));
+        if max <= 0.0 { "Light".to_string() } else { dim_names[idx].to_string() }
+    }).collect();
+
+    // Disambiguate clusters that share a dominant dimension by overall intensity.
+    let mut names = vec![String::new(); n_clusters];
+    for label in base.iter().collect::<std::collections::BTreeSet<_>>() {
+        let mut group: Vec<usize> = (0..n_clusters).filter(|&i| &base[i] == label).collect();
+        group.sort_by(|&a, &b| {
+            let sa: f64 = z_centroids[a].iter().sum();
+            let sb: f64 = z_centroids[b].iter().sum();
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let prefixes: &[&str] = match group.len() {
+            1 => &[""],
+            2 => &["Heavy ", "Light "],
+            _ => &["Heavy ", "", "Light "],
+        };
+        for (rank, &i) in group.iter().enumerate() {
+            let prefix = prefixes.get(rank).copied().unwrap_or("Light ");
+            let suffix = if rank >= prefixes.len() { format!(" {}", rank + 1) } else { String::new() };
+            names[i] = if label == "Light" {
+                // "Heavy Light Day" reads badly; quieter ranks become "Quiet Day".
+                if rank == 0 { "Light Day".to_string() } else { format!("Quiet Day{}", if rank > 1 { format!(" {rank}") } else { String::new() }) }
+            } else {
+                format!("{prefix}{label} Day{suffix}")
+            };
+        }
+    }
+    (assignments, names, raw_centroids)
+}
+
 /// Naive Bayes: P(project | dow) using frequency counts.
 pub fn naive_bayes_predict(
     dow_project: &[(i32, String, i64)],
@@ -1156,20 +1232,16 @@ pub async fn get_trends_data(
         }).collect()
     }).collect();
 
-    let (assignments, centroids) = kmeans(&data_points, 3, 20);
-
-    // Name clusters by dominant dimension
+    let (assignments, cluster_names, centroids) = classify_days(&data_points, &dim_names, 3);
     let clusters: Vec<DayCluster> = centroids.iter().enumerate().map(|(i, c)| {
-        let dominant = c.iter().enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(idx, _)| idx)
-            .unwrap_or(0);
-        let name = format!("{} Day", dim_names.get(dominant).unwrap_or(&"Mixed"));
         let count = assignments.iter().filter(|&&a| a == i).count();
-        DayCluster { name, centroid: c.iter().map(|v| (v * 10.0).round() / 10.0).collect(), count }
+        DayCluster {
+            name: cluster_names[i].clone(),
+            centroid: c.iter().map(|v| (v * 10.0).round() / 10.0).collect(),
+            count,
+        }
     }).collect();
 
-    let cluster_names: Vec<String> = clusters.iter().map(|c| c.name.clone()).collect();
     let days: Vec<ClassifiedDay> = day_set.iter().zip(&assignments).map(|(date, &a)| {
         ClassifiedDay {
             date: date.clone(),
