@@ -61,6 +61,9 @@ jobs:
           cargo build --release -p recap-daemon --target aarch64-apple-darwin
           mkdir -p crates/recap-app/binaries
           cp target/aarch64-apple-darwin/release/recap-daemon crates/recap-app/binaries/recap-daemon-aarch64-apple-darwin
+          # tauri-build copies the sidecar back to this exact path; macOS 15 refuses to overwrite
+          # the freshly built executable ("Operation not permitted"), so clear it first.
+          rm -f target/aarch64-apple-darwin/release/recap-daemon
 
       - name: Build Tauri app
         run: cargo tauri build --target aarch64-apple-darwin --config crates/recap-app/tauri.conf.json --config crates/recap-app/tauri.sidecar.conf.json
