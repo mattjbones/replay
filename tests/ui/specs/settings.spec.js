@@ -44,4 +44,17 @@ test.describe("Settings modal", () => {
     const connectionsTitle = page.locator(".settings-section-title", { hasText: "Connections" });
     await expect(connectionsTitle).toBeVisible();
   });
+
+  test("shows and saves delegated authors", async ({ page }) => {
+    await page.click("#action-settings");
+    const box = page.locator("#pref-gh-delegated");
+    await expect(box).toHaveValue("app/test-bot | Test User");
+
+    await box.fill("app/test-bot | Test User\napp/other | Someone Else\nmalformed line");
+    await page.click("#pref-save-btn");
+    await expect.poll(() => page.evaluate(() => window.__lastConfig?.github?.delegated_authors)).toEqual([
+      { author: "app/test-bot", requested_by: "Test User" },
+      { author: "app/other", requested_by: "Someone Else" },
+    ]);
+  });
 });
