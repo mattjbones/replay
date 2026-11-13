@@ -351,7 +351,10 @@
         <div class="card">
           <div class="card-header">
             <span class="card-label">Messages</span>
-            <span id="slack-message-count" class="activity-count"></span>
+            <span class="card-header-actions">
+              <span id="slack-message-count" class="activity-count"></span>
+              <button class="btn btn-small" id="slack-toggle-text" aria-pressed="false">Show messages</button>
+            </span>
           </div>
           <div class="activity-table-wrapper" style="max-height:600px">
             <table class="activity-table">
