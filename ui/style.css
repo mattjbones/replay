@@ -947,6 +947,17 @@ body {
   margin-left: auto;
 }
 
+.card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.message-hidden {
+  color: var(--text-dim) !important;
+  font-style: italic;
+}
+
 /* ===== Feature Areas ===== */
 .features-content {
   display: flex;

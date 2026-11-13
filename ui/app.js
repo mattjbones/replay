@@ -760,6 +760,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     slackChannels: $("#slack-channels"),
     slackMessageTbody: $("#slack-message-tbody"),
     slackMessageCount: $("#slack-message-count"),
+    slackToggleText: $("#slack-toggle-text"),
   };
 
   // Inject robot SVGs into "coming soon" placeholders from template
@@ -835,6 +836,7 @@ function bindEvents() {
 
   // Sync
   dom.syncBtn.addEventListener("click", handleSync);
+  dom.slackToggleText?.addEventListener("click", toggleSlackText);
   dom.syncBtn.addEventListener("mouseenter", updateSyncTooltip);
   updateSyncTooltip();
 
@@ -2039,7 +2041,24 @@ function renderLinearTable(activities, filter) {
 
 // ===== Slack View =====
 
+/** Slack channel/DM label: "#channel", but DMs ("@Name", "Direct messages", "Group DM") as-is. */
+function slackChannelLabel(name) {
+  if (!name) return 'DM';
+  return /^@|^Direct messages$|^Group DM$|^DM$/.test(name) ? name : `#${name}`;
+}
+
+// Message text is hidden by default so the Slack tab is safe to have on screen; it resets each
+// launch on purpose.
+let slackTextShown = false;
+let lastSlackActivities = [];
+
+function toggleSlackText() {
+  slackTextShown = !slackTextShown;
+  renderSlackView(lastSlackActivities);
+}
+
 function renderSlackView(activities) {
+  lastSlackActivities = activities;
   // Group by channel (project field)
   const channels = {};
   for (const a of activities) {
@@ -2059,7 +2078,7 @@ function renderSlackView(activities) {
   const sortedChannels = Object.entries(channels).sort((a, b) => (b[1].messages + b[1].threads) - (a[1].messages + a[1].threads));
   dom.slackChannels.innerHTML = sortedChannels.map(([name, stats]) => `
     <div class="slack-channel-card">
-      <div class="slack-channel-name">#${escapeHtml(name)}</div>
+      <div class="slack-channel-name">${escapeHtml(slackChannelLabel(name))}</div>
       <div class="slack-channel-stat">${stats.messages} messages, ${stats.threads} replies</div>
     </div>
   `).join('');
@@ -2067,9 +2086,20 @@ function renderSlackView(activities) {
   // Message table
   const sorted = [...activities].sort((a, b) => new Date(b.occurred_at) - new Date(a.occurred_at));
   dom.slackMessageCount.textContent = `${sorted.length} messages`;
+  if (dom.slackToggleText) {
+    dom.slackToggleText.textContent = slackTextShown ? 'Hide messages' : 'Show messages';
+    dom.slackToggleText.setAttribute('aria-pressed', String(slackTextShown));
+  }
+  const messageCell = (a) => {
+    const text = slackTextShown ? escapeHtml(a.description || a.title) : 'Open in Slack ↗';
+    const cls = slackTextShown ? 'activity-title-link' : 'activity-title-link message-hidden';
+    return a.url
+      ? `<a class="${cls}" href="${escapeAttr(a.url)}" target="_blank">${text}</a>`
+      : `<span class="activity-title-text${slackTextShown ? '' : ' message-hidden'}">${slackTextShown ? text : 'Hidden'}</span>`;
+  };
   dom.slackMessageTbody.innerHTML = sorted.map(a => `<tr>
-    <td><span class="project-tag">#${escapeHtml(a.project || 'DM')}</span></td>
-    <td style="max-width:400px">${a.url ? `<a class="activity-title-link" href="${escapeAttr(a.url)}" target="_blank">${escapeHtml(a.description || a.title)}</a>` : `<span class="activity-title-text">${escapeHtml(a.description || a.title)}</span>`}</td>
+    <td><span class="project-tag">${escapeHtml(slackChannelLabel(a.project))}</span></td>
+    <td style="max-width:400px">${messageCell(a)}</td>
     <td><span class="kind-badge kind-message">${a.kind === 'thread_replied' ? 'Reply' : 'Message'}</span></td>
     <td><span class="time-dim">${relativeTime(a.occurred_at)}</span></td>
   </tr>`).join('');
