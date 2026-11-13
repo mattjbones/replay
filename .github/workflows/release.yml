@@ -58,12 +58,13 @@ jobs:
 
       - name: Build recap-daemon sidecar
         run: |
-          cargo build --release -p recap-daemon --target aarch64-apple-darwin
+          # Build every workspace binary (not just -p recap-daemon): `cargo tauri build` also builds
+          # all workspace bins, and with different feature unification it would relink
+          # recap-daemon in parallel with tauri-build copying the sidecar onto that same path,
+          # which fails with "Operation not permitted". Matching the build keeps it Fresh.
+          cargo build --release --bins --target aarch64-apple-darwin
           mkdir -p crates/recap-app/binaries
           cp target/aarch64-apple-darwin/release/recap-daemon crates/recap-app/binaries/recap-daemon-aarch64-apple-darwin
-          # tauri-build copies the sidecar back to this exact path; macOS 15 refuses to overwrite
-          # the freshly built executable ("Operation not permitted"), so clear it first.
-          rm -f target/aarch64-apple-darwin/release/recap-daemon
 
       - name: Build Tauri app
         run: cargo tauri build --target aarch64-apple-darwin --config crates/recap-app/tauri.conf.json --config crates/recap-app/tauri.sidecar.conf.json
