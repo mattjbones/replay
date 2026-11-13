@@ -17,8 +17,6 @@ build:
 # builds bundle it, via tauri.sidecar.conf.json, so dev/check don't need it.
 HOST_TRIPLE := $(shell rustc -vV | sed -n 's/^host: //p')
 sidecar:
-	# All bins, not -p: matches cargo tauri build's feature unification so recap-daemon
-	# stays Fresh there instead of relinking while tauri-build copies the sidecar over it.
 	cargo build --release --bins
 	mkdir -p crates/recap-app/binaries
 	cp target/release/recap-daemon crates/recap-app/binaries/recap-daemon-$(HOST_TRIPLE)

@@ -1,5 +1,9 @@
 {
   "bundle": {
-    "externalBin": ["binaries/recap-daemon"]
+    "macOS": {
+      "files": {
+        "MacOS/recap-daemon": "binaries/recap-daemon-aarch64-apple-darwin"
+      }
+    }
   }
 }
