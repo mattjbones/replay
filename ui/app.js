@@ -2393,6 +2393,11 @@ function renderSettingsPrefs() {
       <div class="pref-hint">PR-based hides raw commits from charts/totals/AI summaries; trunk-based hides PR events instead</div>
     </div>
     <div class="pref-row">
+      <label class="pref-label">Delegated authors</label>
+      <textarea class="pref-input" id="pref-gh-delegated" rows="3" placeholder="app/claude | Your Name">${escapeHtml(formatDelegatedAuthors(c.github?.delegated_authors))}</textarea>
+      <div class="pref-hint">One bot per line: <code>author | requested by</code>. Bot PRs whose body says "Requested by &lt;name&gt;" count as yours (🤖)</div>
+    </div>
+    <div class="pref-row">
       <label class="pref-label">LLM profile</label>
       <select class="pref-input" id="pref-llm-profile">
         <option value="work"${(llm.profile || 'work') === 'work' ? ' selected' : ''}>Work</option>
@@ -2592,6 +2597,18 @@ function renderDebugPage() {
   });
 }
 
+/** `[{author, requested_by}]` <-> "author | requested by" lines for the Settings textarea. */
+function formatDelegatedAuthors(list) {
+  return (list || []).map(d => `${d.author} | ${d.requested_by}`).join('\n');
+}
+
+function parseDelegatedAuthors(text) {
+  return (text || '').split('\n')
+    .map(line => line.split('|').map(s => s.trim()))
+    .filter(([author, requestedBy]) => author && requestedBy)
+    .map(([author, requestedBy]) => ({ author, requested_by: requestedBy }));
+}
+
 async function savePreferences() {
   if (!state.config) return;
   const previousProfile = state.config.llm?.profile || "work";
@@ -2600,6 +2617,7 @@ async function savePreferences() {
   const ghUsername = document.getElementById('pref-gh-username')?.value?.trim();
   state.config.github.username = ghUsername || null;
   state.config.github.workflow = document.getElementById('pref-gh-workflow')?.value || 'pr';
+  state.config.github.delegated_authors = parseDelegatedAuthors(document.getElementById('pref-gh-delegated')?.value);
   if (!state.config.llm) state.config.llm = {};
   state.config.llm.profile = document.getElementById('pref-llm-profile')?.value || 'work';
   const profileChanged = previousProfile !== state.config.llm.profile;

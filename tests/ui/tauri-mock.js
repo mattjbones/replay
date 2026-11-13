@@ -87,7 +87,7 @@
   const FIXTURE_CONFIG = {
     schedule: { sync_interval_minutes: 5, daily_reminder_time: "17:00", weekly_reminder_day: "Friday" },
     ttl: { hot_minutes: 5, warm_minutes: 60, cold_minutes: 1440 },
-    github: { username: "testuser", workflow: "pr" },
+    github: { username: "testuser", workflow: "pr", delegated_authors: [{ author: "app/test-bot", requested_by: "Test User" }] },
     linear: {},
     slack: { user_id: null, ignored_channels: [], client_id: null, client_secret: null },
     notion: {},
@@ -189,7 +189,7 @@
     clear_cache: () => null,
     trigger_sync: () => "sync complete",
     get_config: () => FIXTURE_CONFIG,
-    update_config: () => null,
+    update_config: (args) => { window.__lastConfig = args?.config; return null; },
     get_llm_summary: () => "**Summary:** You had a productive day with 2 PRs merged and 3 issues progressed.",
     get_chart_data: () => FIXTURE_CHART_DATA,
     get_feature_breakdown: () => FIXTURE_FEATURES,
