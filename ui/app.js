@@ -1555,8 +1555,11 @@ function renderFeatures(features) {
     return;
   }
 
-  // Sort by count descending, take top 8
-  const sorted = [...features].sort((a, b) => b.count - a.count).slice(0, 8);
+  // Projects get full bars; conversations (Slack channels/DMs) sit underneath as a compact
+  // secondary list so chat volume doesn't crowd out the actual work.
+  const byCount = [...features].sort((a, b) => b.count - a.count);
+  const sorted = byCount.filter(f => !f.secondary).slice(0, 8);
+  const conversations = byCount.filter(f => f.secondary).slice(0, 6);
   const maxCount = sorted[0]?.count || 1;
 
   const kindColorMap = {
@@ -1606,7 +1609,20 @@ function renderFeatures(features) {
       </div>`;
   }
 
-  dom.featuresContent.innerHTML = html;
+  if (conversations.length) {
+    const maxConv = conversations[0].count || 1;
+    html += `<div class="feature-secondary">
+      <div class="feature-secondary-title">Conversations</div>
+      ${conversations.map(c => `
+        <div class="feature-secondary-row">
+          <span class="feature-secondary-name" title="${escapeAttr(c.project)}">${escapeHtml(c.project)}</span>
+          <span class="feature-secondary-bar"><span style="width:${Math.round((c.count / maxConv) * 100)}%"></span></span>
+          <span class="feature-label-count">${c.count}</span>
+        </div>`).join("")}
+    </div>`;
+  }
+
+  dom.featuresContent.innerHTML = html || '<div class="no-data">No feature data</div>';
 }
 
 // ===== Linear Progress =====

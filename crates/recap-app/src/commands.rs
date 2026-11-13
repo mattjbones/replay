@@ -414,6 +414,27 @@ pub struct FeatureBreakdown {
     pub project: String,
     pub count: usize,
     pub kinds: HashMap<String, usize>,
+    /// A conversation (Slack channel/DM) rather than a project; the UI lists these separately.
+    pub secondary: bool,
+}
+
+/// Feature-area key for an activity: (name, is_conversation). Slack rows synced before DM
+/// names were resolved carry the raw partner user id as their project.
+fn feature_key(a: &Activity) -> (String, bool) {
+    let project = a.project.clone().unwrap_or_else(|| "Other".to_string());
+    if a.source != Source::Slack {
+        return (project, false);
+    }
+    let is_raw_user_id = project.len() >= 9
+        && (project.starts_with('U') || project.starts_with('W'))
+        && project.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+    if is_raw_user_id {
+        ("Direct messages".to_string(), true)
+    } else if project.starts_with('@') || project == "Direct messages" || project == "Group DM" {
+        (project, true)
+    } else {
+        (format!("#{project}"), true)
+    }
 }
 
 #[tauri::command]
@@ -428,19 +449,18 @@ pub async fn get_feature_breakdown(
         get_activities_for_range(&state.db, start, end).map_err(|e| e.to_string())?;
     let activities = filter_by_workflow(activities, &config);
 
-    let mut projects: HashMap<String, HashMap<String, usize>> = HashMap::new();
+    let mut projects: HashMap<(String, bool), HashMap<String, usize>> = HashMap::new();
 
     for a in &activities {
-        let project = a.project.clone().unwrap_or_else(|| "Other".to_string());
-        let kinds = projects.entry(project).or_default();
+        let kinds = projects.entry(feature_key(a)).or_default();
         *kinds.entry(a.kind.to_string()).or_insert(0) += 1;
     }
 
     let mut result: Vec<FeatureBreakdown> = projects
         .into_iter()
-        .map(|(project, kinds)| {
+        .map(|((project, secondary), kinds)| {
             let count = kinds.values().sum();
-            FeatureBreakdown { project, count, kinds }
+            FeatureBreakdown { project, count, kinds, secondary }
         })
         .collect();
 

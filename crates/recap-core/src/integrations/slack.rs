@@ -16,6 +16,8 @@ pub struct SlackIntegration {
     ignored_channels: Vec<String>,
     client_id: Option<String>,
     client_secret: Option<String>,
+    /// DM partner user id -> display name, resolved lazily via `users.info`.
+    user_names: tokio::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
 }
 
 impl SlackIntegration {
@@ -41,7 +43,37 @@ impl SlackIntegration {
             ignored_channels,
             client_id,
             client_secret,
+            user_names: Default::default(),
         }
+    }
+
+    /// Display name for a Slack user id (cached; `None` if Slack won't say).
+    async fn user_name(&self, id: &str) -> Option<String> {
+        if let Some(cached) = self.user_names.lock().await.get(id) {
+            return cached.clone();
+        }
+        let token = self.token.lock().unwrap().clone();
+        let name = async {
+            let body: serde_json::Value = self.client
+                .get("https://slack.com/api/users.info")
+                .query(&[("user", id)])
+                .header("Authorization", format!("Bearer {token}"))
+                .send().await.ok()?
+                .json().await.ok()?;
+            if body["ok"].as_bool() != Some(true) {
+                tracing::warn!("slack: users.info {id}: {}", body["error"].as_str().unwrap_or("unknown"));
+                return None;
+            }
+            let user = &body["user"];
+            let found = [&user["profile"]["display_name"], &user["profile"]["real_name"], &user["real_name"], &user["name"]]
+                .into_iter()
+                .filter_map(|v| v.as_str())
+                .find(|n| !n.trim().is_empty())
+                .map(str::to_string);
+            found
+        }.await;
+        self.user_names.lock().await.insert(id.to_string(), name.clone());
+        name
     }
 
     /// The user's Slack id: from config, else asked of Slack for the token's owner. Without it
@@ -233,12 +265,18 @@ struct SlackChannel {
 impl SlackChannel {
     /// Human label for the conversation. Search results give a DM's "name" as the other
     /// user's raw ID (e.g. `U0123ABCD`), which is meaningless in the UI.
-    fn label(&self) -> String {
-        if self.is_im || self.is_mpim || looks_like_user_id(&self.name) {
-            "Direct messages".to_string()
+    fn label(&self, dm_name: Option<&str>) -> String {
+        if self.is_mpim {
+            "Group DM".to_string()
+        } else if self.is_dm() {
+            dm_name.map_or_else(|| "Direct messages".to_string(), |n| format!("@{n}"))
         } else {
             format!("#{}", self.name)
         }
+    }
+
+    fn is_dm(&self) -> bool {
+        self.is_im || looks_like_user_id(&self.name)
     }
 }
 
@@ -469,10 +507,16 @@ impl SlackIntegration {
                     ActivityKind::MessageSent
                 };
 
-                let title = if is_thread_reply {
-                    format!("Reply in {}", msg.channel.label())
+                let dm_name = if msg.channel.is_dm() && looks_like_user_id(&msg.channel.name) {
+                    self.user_name(&msg.channel.name).await
                 } else {
-                    format!("Message in {}", msg.channel.label())
+                    None
+                };
+                let label = msg.channel.label(dm_name.as_deref());
+                let title = if is_thread_reply {
+                    format!("Reply in {label}")
+                } else {
+                    format!("Message in {label}")
                 };
 
                 let source_id = msg
@@ -497,7 +541,7 @@ impl SlackIntegration {
                     activity.description = Some(desc);
                 }
 
-                activity.project = Some(msg.channel.label().trim_start_matches('#').to_string());
+                activity.project = Some(label.trim_start_matches('#').to_string());
 
                 activity.metadata = serde_json::json!({
                     "channel_id": msg.channel.id,
@@ -543,10 +587,14 @@ mod tests {
 
     #[test]
     fn dm_channels_are_labelled_not_raw_user_ids() {
-        assert_eq!(chan("U0BV0CD22CF", false).label(), "Direct messages");
-        assert_eq!(chan("someone", true).label(), "Direct messages");
-        assert_eq!(chan("engineers", false).label(), "#engineers");
-        assert_eq!(chan("UPPERCASE-CHANNEL", false).label(), "#UPPERCASE-CHANNEL");
+        assert_eq!(chan("U0BV0CD22CF", false).label(Some("Sam")), "@Sam");
+        assert_eq!(chan("U0BV0CD22CF", false).label(None), "Direct messages");
+        assert_eq!(chan("someone", true).label(None), "Direct messages");
+        assert_eq!(chan("engineers", false).label(Some("ignored")), "#engineers");
+        assert_eq!(chan("UPPERCASE-CHANNEL", false).label(None), "#UPPERCASE-CHANNEL");
+        let mut group = chan("mpdm-a--b-1", false);
+        group.is_mpim = true;
+        assert_eq!(group.label(None), "Group DM");
     }
 
     #[test]
