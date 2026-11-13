@@ -52,6 +52,17 @@ test.describe("Overview (default view)", () => {
     await expect(page.locator("#card-activity-table")).toBeVisible();
   });
 
+  test("lists Slack conversations below projects in Feature Areas", async ({ page }) => {
+    const card = page.locator("#card-features");
+    // Projects lead even though #general has more activity.
+    await expect(card.locator(".feature-row").first()).toContainText("recap");
+    await expect(card.locator(".feature-row", { hasText: "#general" })).toHaveCount(0);
+    const convo = card.locator(".feature-secondary");
+    await expect(convo).toContainText("Conversations");
+    await expect(convo.locator(".feature-secondary-row").first()).toContainText("#general");
+    await expect(convo).toContainText("@Sam");
+  });
+
   test("renders the activity table with rows", async ({ page }) => {
     const rows = page.locator("#activity-tbody tr");
     // Should have rows from the fixture activities

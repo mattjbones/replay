@@ -986,6 +986,52 @@ body {
   transition: width 0.4s ease;
 }
 
+.feature-secondary {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--glass-faint);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.feature-secondary-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.feature-secondary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30% auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.feature-secondary-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feature-secondary-bar {
+  height: 4px;
+  background: var(--glass-faint);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.feature-secondary-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--text-dim);
+  opacity: 0.5;
+}
+
 /* ===== Linear Progress ===== */
 .linear-content {
   display: flex;

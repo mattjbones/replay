@@ -74,6 +74,8 @@
     { project: "recap", count: 7, kinds: { pr_merged: 1, commit_pushed: 2, pr_reviewed: 1, issue_created: 1, issue_completed: 1, issue_updated: 1 } },
     { project: "analytics", count: 1, kinds: { pr_merged: 1 } },
     { project: "docs", count: 1, kinds: { pr_reviewed: 1 } },
+    { project: "#general", count: 40, kinds: { message_sent: 40 }, secondary: true },
+    { project: "@Sam", count: 12, kinds: { message_sent: 12 }, secondary: true },
   ];
 
   const FIXTURE_AUTH_STATUS = {
