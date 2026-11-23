@@ -2912,7 +2912,7 @@ async function loadTrendsView() {
     const data = await invoke('get_trends_data');
     renderTrendsHeader(data.productivity, data.prediction);
     renderAnomalies(data.anomalies);
-    renderForecastChart(data.velocity, data.prediction);
+    renderForecastChart(data.velocity, data.prediction, data.productivity.partial_week);
     renderProductivityChart(data.productivity);
     renderVelocityChart(data.velocity);
     renderCycleTimeChart(data.cycle_time);
@@ -2952,23 +2952,35 @@ async function generateTrendsAiSummary(data) {
     `${kind}: ${vals.map(v => v.toFixed(1)).join(', ')}`
   ).join('; ');
 
+  // Partial-week totals read as a collapse if compared with full weeks; spell out
+  // what's comparable so the model doesn't.
+  const periodNote = p.partial_week
+    ? `Note: ${p.partial_week} is the current week and only ${p.partial_week_days} of 7 days in, so its weekly totals are partial. It is excluded from the anomalies, trend, forecast and weekly average. Do not compare it with full weeks or describe it as a drop; use the rolling 7-day scores for recent movement.`
+    : 'All weeks shown are complete.';
+  const forecastFrom = p.partial_week ? `${p.partial_week} (current week, full-week estimate)` : 'next week';
+  const scoreLine = `last 7 days ${p.current_score} vs previous 7 days ${p.previous_score}; weekly average over complete weeks ${p.baseline_avg}; trend across complete weeks ${p.trend}`;
+
   const prompt = llmProfile === 'personal'
     ? `You are analyzing a personal developer's 12-week activity trends. Give a concise, insightful 3-4 bullet analysis in markdown.
 Focus on momentum, consistency, and craft development. Mention effort signals carefully (sustained focus/time investment) only when evidence is clear.
 Avoid corporate performance framing and do not over-index on burnout language.
 
-Momentum: current score ${p.current_score}, baseline avg ${p.baseline_avg}, trend ${p.trend}
+${periodNote}
+
+Momentum: ${scoreLine}
 Effort note: off-hours trend ${b.trend_direction}, latest off-hours ${b.off_hours_pct.slice(-1)[0]?.toFixed(1) || 0}%
-Forecast (next 3 weeks): ${forecastLines}
+Forecast (3 weeks from ${forecastFrom}): ${forecastLines}
 Anomalies: ${anomalyDesc}
 Day types: ${clusterDesc}
 Tomorrow prediction: ${projPred}
 Active projects: ${focusProjects}`
     : `You are analyzing a software engineer's 12-week activity trends. Give a concise, insightful 3-4 bullet analysis in markdown. Be specific with numbers. Highlight what's notable — don't just restate data.
 
-Productivity: current score ${p.current_score}, baseline avg ${p.baseline_avg}, trend ${p.trend}
+${periodNote}
+
+Productivity: ${scoreLine}
 Burnout: off-hours trend ${b.trend_direction}, latest off-hours ${b.off_hours_pct.slice(-1)[0]?.toFixed(1) || 0}%
-Forecast (next 3 weeks): ${forecastLines}
+Forecast (3 weeks from ${forecastFrom}): ${forecastLines}
 Anomalies: ${anomalyDesc}
 Day types: ${clusterDesc}
 Tomorrow prediction: ${projPred}
@@ -2987,12 +2999,18 @@ Active projects: ${focusProjects}`;
   }
 }
 
+/** "W47", or "W47 (so far)" for the in-progress week. */
+function weekLabel(week, partialWeek) {
+  const short = week.replace(/^\d{4}-/, '');
+  return week === partialWeek ? `${short} (so far)` : short;
+}
+
 function renderTrendsHeader(productivity, prediction) {
   const personal = isPersonalProfile();
   const trendIcon = productivity.trend === 'improving' ? '\u2197' : productivity.trend === 'declining' ? '\u2198' : '\u2192';
   dom.trendsPredictions.innerHTML = renderStatCards([
-    { value: productivity.current_score, label: `${personal ? 'Momentum' : 'Productivity'} ${trendIcon}` },
-    { value: productivity.baseline_avg, label: '12-wk Average' },
+    { value: productivity.current_score, label: `${personal ? 'Momentum' : 'Productivity'} · last 7 days ${trendIcon}` },
+    { value: productivity.baseline_avg, label: 'Weekly Average' },
     { value: prediction.confidence.charAt(0).toUpperCase() + prediction.confidence.slice(1), label: personal ? 'Signal Confidence' : 'Forecast Confidence' },
     { value: productivity.trend.charAt(0).toUpperCase() + productivity.trend.slice(1), label: 'Trend' },
   ]);
@@ -3014,7 +3032,12 @@ function renderAnomalies(anomalies) {
   }).join('');
 }
 
-function renderForecastChart(velocity, prediction) {
+/**
+ * When the last week is still in progress, the forecast was fitted on complete
+ * weeks only, so its first value is the estimate for the current week: plot it
+ * there (beside the partial "so far" point) rather than a week later.
+ */
+function renderForecastChart(velocity, prediction, partialWeek) {
   if (!hasChartJs()) return;
   if (state.charts.forecast) state.charts.forecast.destroy();
 
@@ -3025,7 +3048,9 @@ function renderForecastChart(velocity, prediction) {
     pr_reviewed: KIND_COLORS.reviews,
   };
   const labelMap = { pr_merged: 'PRs Merged', issue_completed: 'Issues Done', commit_pushed: 'Commits', pr_reviewed: 'Reviews' };
-  const allLabels = [...velocity.weeks, ...prediction.weeks_ahead].map(w => w.replace(/^\d{4}-/, ''));
+  const partial = !!partialWeek && velocity.weeks[velocity.weeks.length - 1] === partialWeek;
+  const aheadLabels = partial ? prediction.weeks_ahead.slice(0, -1) : prediction.weeks_ahead;
+  const allLabels = [...velocity.weeks.map(w => weekLabel(w, partialWeek)), ...aheadLabels];
   const datasets = [];
 
   for (const [kind, hist] of Object.entries(velocity.series)) {
@@ -3034,7 +3059,7 @@ function renderForecastChart(velocity, prediction) {
     // Historical data (solid)
     datasets.push({
       label: labelMap[kind] || kind,
-      data: [...hist, ...new Array(forecast.length).fill(null)],
+      data: [...hist, ...new Array(aheadLabels.length).fill(null)],
       borderColor: color, backgroundColor: color + '33',
       fill: false, tension: 0.3, pointRadius: 3,
     });
@@ -3042,7 +3067,9 @@ function renderForecastChart(velocity, prediction) {
     if (forecast.length) {
       datasets.push({
         label: `${labelMap[kind] || kind} forecast`,
-        data: [...new Array(hist.length - 1).fill(null), hist[hist.length - 1], ...forecast],
+        data: partial
+          ? [...new Array(hist.length - 2).fill(null), hist[hist.length - 2], ...forecast]
+          : [...new Array(hist.length - 1).fill(null), hist[hist.length - 1], ...forecast],
         borderColor: color, borderDash: [6, 4],
         pointStyle: 'triangle', pointRadius: 4, fill: false,
       });
@@ -3070,7 +3097,7 @@ function renderProductivityChart(prod) {
   state.charts.productivity = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: prod.weeks.map(w => w.replace(/^\d{4}-/, '')),
+      labels: prod.weeks.map(w => weekLabel(w, prod.partial_week)),
       datasets: [
         {
           label: 'Score',

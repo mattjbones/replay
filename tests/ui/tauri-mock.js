@@ -171,8 +171,11 @@
       weeks: ["2026-W10", "2026-W11", "2026-W12"],
       scores: [18.5, 24.0, 21.5],
       current_score: 21.5,
+      previous_score: 20.0,
       trend: "improving",
       baseline_avg: 21.3,
+      partial_week: null,
+      partial_week_days: 0,
     },
   };
 
