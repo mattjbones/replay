@@ -2479,3 +2479,51 @@ body {
 .hidden {
   display: none !important;
 }
+
+/* Pace: this week so far vs previous weeks at the same point */
+.pace-card {
+  margin-bottom: 16px;
+}
+
+.pace-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.pace-table th {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  text-align: left;
+  padding: 0 8px 8px;
+}
+
+.pace-table td {
+  padding: 8px;
+  border-top: 1px solid var(--glass-dim);
+}
+
+.pace-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pace-table tr.pace-overall td {
+  font-weight: 600;
+}
+
+.pace-chip {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pace-ahead { color: var(--status-completed); }
+.pace-on_track { color: var(--status-review); }
+/* Behind is information, not an alarm: muted amber, never red */
+.pace-behind { color: var(--status-open); }
+
+@media (max-width: 640px) {
+  .pace-table th:nth-child(4),
+  .pace-table td:nth-child(4) { display: none; }
+}

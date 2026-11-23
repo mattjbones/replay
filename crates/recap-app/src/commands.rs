@@ -656,6 +656,31 @@ pub struct TrendsData {
     pub day_clusters: DayClusterData,
     pub project_prediction: Vec<ProjectPrediction>,
     pub productivity: ProductivityData,
+    pub pace: PaceData,
+}
+
+/// This week so far vs the same point (weekday + time) in earlier weeks, so a
+/// mid-week view is judged against comparable periods rather than full weeks.
+#[derive(Serialize)]
+pub struct PaceData {
+    /// 1 = Monday .. 7 = Sunday (UTC, matching the weekly buckets).
+    pub day_of_week: u32,
+    pub metrics: Vec<PaceMetric>,
+    /// Weighted score across all tracked kinds.
+    pub overall: PaceMetric,
+}
+
+#[derive(Serialize, Clone)]
+pub struct PaceMetric {
+    pub kind: String,
+    pub label: String,
+    pub so_far: f64,
+    /// Last week up to the same weekday and time.
+    pub last_week: f64,
+    /// Mean of the previous 4 weeks, each up to the same weekday and time.
+    pub avg_4wk: f64,
+    /// "ahead", "on_track" or "behind", relative to `avg_4wk`.
+    pub status: String,
 }
 
 #[derive(Serialize)]
@@ -764,6 +789,71 @@ pub fn in_progress_week(weeks: &[String], now: chrono::DateTime<Utc>) -> Option<
     let current = now.format("%Y-W%W").to_string();
     let idx = weeks.len().checked_sub(1)?;
     (weeks[idx] == current).then(|| (idx, now.weekday().num_days_from_monday() + 1))
+}
+
+/// Pace status: within 15% of the 4-week pace (or within `floor` in absolute
+/// terms, so one item early in the week isn't read as a swing) is on track.
+fn pace_status(so_far: f64, avg: f64, floor: f64) -> &'static str {
+    let diff = so_far - avg;
+    if diff.abs() <= (avg * 0.15).max(floor) { "on_track" }
+    else if diff > 0.0 { "ahead" }
+    else { "behind" }
+}
+
+/// Builds `PaceData` from `(occurred_at, kind)` events. Each week's window runs
+/// from its Monday 00:00 UTC for as long as the current week has run so far.
+pub fn compute_pace(
+    events: &[(chrono::DateTime<Utc>, String)],
+    kinds: &[(&str, &str)],
+    weights: &[(&str, f64)],
+    now: chrono::DateTime<Utc>,
+) -> PaceData {
+    let week_start = (now - chrono::Duration::days(now.weekday().num_days_from_monday() as i64))
+        .date_naive()
+        .and_time(NaiveTime::MIN)
+        .and_utc();
+    let elapsed = now - week_start;
+    // Per-kind counts for `weeks_ago` (0 = this week), within the elapsed window.
+    let counts = |weeks_ago: i64| -> HashMap<&str, f64> {
+        let start = week_start - chrono::Duration::weeks(weeks_ago);
+        let end = start + elapsed;
+        let mut m: HashMap<&str, f64> = HashMap::new();
+        for (t, kind) in events {
+            if *t >= start && *t < end {
+                *m.entry(kind.as_str()).or_default() += 1.0;
+            }
+        }
+        m
+    };
+    let weeks: Vec<HashMap<&str, f64>> = (0..=4).map(counts).collect();
+    let get = |w: usize, kind: &str| weeks[w].get(kind).copied().unwrap_or(0.0);
+    let score = |w: usize| weights.iter().map(|(k, wt)| get(w, k) * wt).sum::<f64>();
+    let round = |v: f64| (v * 10.0).round() / 10.0;
+
+    let metrics = kinds.iter().map(|(kind, label)| {
+        let so_far = get(0, kind);
+        let avg = (1..=4).map(|w| get(w, kind)).sum::<f64>() / 4.0;
+        PaceMetric {
+            kind: kind.to_string(),
+            label: label.to_string(),
+            so_far,
+            last_week: get(1, kind),
+            avg_4wk: round(avg),
+            status: pace_status(so_far, avg, 2.0).to_string(),
+        }
+    }).collect();
+
+    let overall_avg = (1..=4).map(score).sum::<f64>() / 4.0;
+    let overall = PaceMetric {
+        kind: "overall".to_string(),
+        label: "Overall".to_string(),
+        so_far: round(score(0)),
+        last_week: round(score(1)),
+        avg_4wk: round(overall_avg),
+        status: pace_status(score(0), overall_avg, 5.0).to_string(),
+    };
+
+    PaceData { day_of_week: now.weekday().num_days_from_monday() + 1, metrics, overall }
 }
 
 /// Weighted activity score over daily `(YYYY-MM-DD, kind, count)` rows for days
@@ -1350,6 +1440,19 @@ pub async fn get_trends_data(
         else if score_slope < -0.5 { "declining" }
         else { "stable" };
 
+    // --- Pace: this week so far vs the same point in previous weeks ---
+    let pace_kinds: Vec<(&str, &str)> = [
+        ("pr_merged", "PRs merged"), ("pr_reviewed", "Reviews"),
+        ("issue_completed", "Issues done"), ("commit_pushed", "Commits"),
+    ]
+        .into_iter()
+        .filter(|(k, _)| key_kinds.contains(k))
+        .collect();
+    let pace_events: Vec<(chrono::DateTime<Utc>, String)> = burnout_activities.iter()
+        .map(|a| (a.occurred_at, a.kind.to_string()))
+        .collect();
+    let pace = compute_pace(&pace_events, &pace_kinds, weights, now);
+
     let productivity = ProductivityData {
         weeks: week_set.clone(),
         scores: weekly_scores.iter().map(|s| (s * 10.0).round() / 10.0).collect(),
@@ -1394,6 +1497,6 @@ pub async fn get_trends_data(
 
     Ok(TrendsData {
         velocity, heatmap, cycle_time, focus, prediction, burnout,
-        anomalies, day_clusters, project_prediction, productivity,
+        anomalies, day_clusters, project_prediction, productivity, pace,
     })
 }
