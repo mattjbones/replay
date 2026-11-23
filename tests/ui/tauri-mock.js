@@ -177,6 +177,15 @@
       partial_week: null,
       partial_week_days: 0,
     },
+    pace: {
+      day_of_week: 3,
+      metrics: [
+        { kind: "pr_merged", label: "PRs merged", so_far: 6, last_week: 4, avg_4wk: 3.5, status: "ahead" },
+        { kind: "pr_reviewed", label: "Reviews", so_far: 12, last_week: 13, avg_4wk: 12.5, status: "on_track" },
+        { kind: "issue_completed", label: "Issues done", so_far: 1, last_week: 6, avg_4wk: 5, status: "behind" },
+      ],
+      overall: { kind: "overall", label: "Overall", so_far: 38, last_week: 43.5, avg_4wk: 39.3, status: "on_track" },
+    },
   };
 
   // -----------------------------------------------------------------------

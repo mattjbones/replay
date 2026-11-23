@@ -706,6 +706,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     viewTrends: $("#view-trends"),
     trendsAiSummary: $("#trends-ai-summary"),
     trendsPredictions: $("#trends-predictions"),
+    paceTitle: $("#pace-title"),
+    paceContent: $("#pace-content"),
     anomalyAlerts: $("#anomaly-alerts"),
     chartForecast: $("#chart-forecast"),
     chartProductivity: $("#chart-productivity"),
@@ -2911,6 +2913,7 @@ async function loadTrendsView() {
   try {
     const data = await invoke('get_trends_data');
     renderTrendsHeader(data.productivity, data.prediction);
+    if (data.pace) renderPace(data.pace);
     renderAnomalies(data.anomalies);
     renderForecastChart(data.velocity, data.prediction, data.productivity.partial_week);
     renderProductivityChart(data.productivity);
@@ -2957,7 +2960,15 @@ async function generateTrendsAiSummary(data) {
   const periodNote = p.partial_week
     ? `Note: ${p.partial_week} is the current week and only ${p.partial_week_days} of 7 days in, so its weekly totals are partial. It is excluded from the anomalies, trend, forecast and weekly average. Do not compare it with full weeks or describe it as a drop; use the rolling 7-day scores for recent movement.`
     : 'All weeks shown are complete.';
+  const paceGuide = 'Lead with how this week is tracking versus last week, using the pace figures (which are like-for-like). A mid-week total being lower than a full week is expected, not a decline. Only call something behind if the pace figures say so, and keep it neutral.';
   const forecastFrom = p.partial_week ? `${p.partial_week} (current week, full-week estimate)` : 'next week';
+  const pc = data.pace;
+  const paceLines = pc
+    ? `Pace this week (${WEEKDAYS[pc.day_of_week - 1]}, day ${pc.day_of_week} of 7; each figure counted up to the same day and time): ` +
+      [...pc.metrics, pc.overall].map(m =>
+        `${m.label} ${m.so_far} so far vs ${m.last_week} last week by now and ${m.avg_4wk} 4-week average by now (${m.status.replace('_', ' ')})`
+      ).join('; ')
+    : '';
   const scoreLine = `last 7 days ${p.current_score} vs previous 7 days ${p.previous_score}; weekly average over complete weeks ${p.baseline_avg}; trend across complete weeks ${p.trend}`;
 
   const prompt = llmProfile === 'personal'
@@ -2966,6 +2977,8 @@ Focus on momentum, consistency, and craft development. Mention effort signals ca
 Avoid corporate performance framing and do not over-index on burnout language.
 
 ${periodNote}
+${paceGuide}
+${paceLines}
 
 Momentum: ${scoreLine}
 Effort note: off-hours trend ${b.trend_direction}, latest off-hours ${b.off_hours_pct.slice(-1)[0]?.toFixed(1) || 0}%
@@ -2977,6 +2990,8 @@ Active projects: ${focusProjects}`
     : `You are analyzing a software engineer's 12-week activity trends. Give a concise, insightful 3-4 bullet analysis in markdown. Be specific with numbers. Highlight what's notable — don't just restate data.
 
 ${periodNote}
+${paceGuide}
+${paceLines}
 
 Productivity: ${scoreLine}
 Burnout: off-hours trend ${b.trend_direction}, latest off-hours ${b.off_hours_pct.slice(-1)[0]?.toFixed(1) || 0}%
@@ -2997,6 +3012,37 @@ Active projects: ${focusProjects}`;
   } catch (err) {
     dom.trendsAiSummary.innerHTML = '<span class="briefing-disabled">AI summary unavailable. Add an Anthropic API key in Settings.</span>';
   }
+}
+
+const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const PACE_STATUS = {
+  ahead: { icon: '\u25B2', text: 'Ahead' },
+  on_track: { icon: '\u25CF', text: 'On track' },
+  behind: { icon: '\u25BC', text: 'Behind' },
+};
+
+function paceChip(status) {
+  const s = PACE_STATUS[status] || PACE_STATUS.on_track;
+  return `<span class="pace-chip pace-${status}">${s.icon} ${s.text}</span>`;
+}
+
+/** This week so far vs last week and the 4-week average, each up to the same point. */
+function renderPace(pace) {
+  const day = WEEKDAYS[pace.day_of_week - 1] || '';
+  dom.paceTitle.textContent = `This week's pace · ${day} (day ${pace.day_of_week} of 7)`;
+  const fmt = (v) => (Number.isInteger(v) ? v : v.toFixed(1));
+  const rows = [...pace.metrics, pace.overall].map((m) => `
+    <tr class="${m.kind === 'overall' ? 'pace-overall' : ''}">
+      <td>${escapeHtml(m.label)}</td>
+      <td class="num">${fmt(m.so_far)}</td>
+      <td class="num">${fmt(m.last_week)}</td>
+      <td class="num">${fmt(m.avg_4wk)}</td>
+      <td>${paceChip(m.status)}</td>
+    </tr>`).join('');
+  dom.paceContent.innerHTML = `<table class="pace-table">
+    <thead><tr><th></th><th class="num">So far</th><th class="num">Last week by now</th><th class="num">4-wk avg by now</th><th></th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
 }
 
 /** "W47", or "W47 (so far)" for the in-progress week. */
