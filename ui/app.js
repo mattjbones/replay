@@ -3091,21 +3091,38 @@ function renderProductivityChart(prod) {
   });
 }
 
+/**
+ * Each row: what share of days fell into this type (bar length), plus the
+ * activity mix that defines it, as labelled per-day averages. Raw centroids
+ * can't be drawn as one bar: Comms runs in the tens per day and swamps the rest.
+ */
 function renderDayClusters(data) {
-  const palette = [cssVar('--highlight'), cssVar('--text-dim'), cssVar('--accent')];
+  const palette = [cssVar('--status-merged'), cssVar('--status-review'), cssVar('--status-completed')];
   const dims = data.dimensions || [];
+  const totalDays = data.clusters.reduce((n, c) => n + c.count, 0) || 1;
+  const fmt = (v) => (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10);
+
   let html = '<div class="cluster-grid">';
   data.clusters.forEach((c, i) => {
     const color = palette[i % palette.length];
-    const maxC = Math.max(1, ...c.centroid);
-    const bars = c.centroid.map((v, di) =>
-      `<div class="cluster-bar-seg" style="flex:${Math.max(v, 0.1)};background:${color};opacity:${0.3 + 0.7 * (v / maxC)}" title="${dims[di] || ''}: ${v}"></div>`
-    ).join('');
+    const share = c.count / totalDays;
+    const mix = c.centroid
+      .map((v, di) => ({ label: dims[di], v }))
+      .filter((d) => d.label && d.v >= 0.5)
+      .sort((a, b) => b.v - a.v)
+      .slice(0, 3)
+      .map((d) => `${fmt(d.v)} ${escapeHtml(d.label)}`)
+      .join(' · ');
     html += `<div class="cluster-card">
       <div class="cluster-dot" style="background:${color}"></div>
-      <span class="cluster-name">${escapeHtml(c.name)}</span>
+      <div class="cluster-label">
+        <span class="cluster-name">${escapeHtml(c.name)}</span>
+        <span class="cluster-mix">${mix ? `${mix} <span class="cluster-mix-unit">/ day</span>` : 'little activity'}</span>
+      </div>
+      <div class="cluster-bar" title="${c.count} of ${totalDays} days">
+        <div class="cluster-bar-fill" style="width:${(share * 100).toFixed(1)}%;background:${color}"></div>
+      </div>
       <span class="cluster-count">${c.count} days</span>
-      <div class="cluster-bar">${bars}</div>
     </div>`;
   });
   html += '</div>';

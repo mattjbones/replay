@@ -1986,25 +1986,49 @@ body {
   flex-shrink: 0;
 }
 
+.cluster-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 190px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
 .cluster-name {
   font-weight: 600;
   font-size: 13px;
-  min-width: 100px;
+}
+
+.cluster-mix {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cluster-mix-unit {
+  opacity: 0.7;
 }
 
 .cluster-count {
   font-size: 12px;
   color: var(--text-dim);
+  min-width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .cluster-bar {
   flex: 1;
-  display: flex;
-  gap: 2px;
   height: 6px;
+  border-radius: 3px;
+  background: var(--glass-dim);
+  overflow: hidden;
 }
 
-.cluster-bar-seg {
+.cluster-bar-fill {
   height: 100%;
   border-radius: 3px;
 }
