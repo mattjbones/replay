@@ -8,7 +8,7 @@ use tauri::State;
 use recap_core::auth::{AuthManager, AuthStatus};
 use recap_core::config::AppConfig;
 use recap_core::db::{get_activities_for_range, get_cached_summary, set_cached_summary,
-    invalidate_all_summaries,
+    invalidate_all_summaries, invalidate_summaries_older_than,
     query_weekly_velocity, query_activity_heatmap, query_cycle_times,
     query_project_distribution, query_message_volume,
     query_daily_vectors, query_dow_project};
@@ -244,6 +244,7 @@ pub async fn trigger_sync(
 ) -> Result<String, String> {
     let db = Arc::clone(&state.db);
     let config = state.config.lock().map_err(|e| e.to_string())?.clone();
+    let summary_refresh_minutes = config.ttl.summary_refresh_minutes;
 
     let scheduler = SyncScheduler::new(Arc::clone(&db), config);
     // With a period, re-fetch exactly that period (the user is looking at it); otherwise
@@ -256,9 +257,9 @@ pub async fn trigger_sync(
         None => scheduler.run_once().await,
     }
 
-    // Invalidate LLM summaries so they regenerate with fresh data
-    // (important when working hours or other settings change).
-    invalidate_all_summaries(&db);
+    // Let summaries regenerate with fresh data, but not more often than
+    // summary_refresh_minutes. Settings changes hard-invalidate in update_config.
+    invalidate_summaries_older_than(&db, summary_refresh_minutes);
 
     Ok("sync complete".to_string())
 }
@@ -294,6 +295,7 @@ pub async fn get_llm_summary(
     state: State<'_, AppState>,
     period: String,
     date: Option<String>,
+    force: Option<bool>,
 ) -> Result<Option<String>, String> {
     let (p, start, end) = parse_period_range(&period, date.as_deref())?;
 
@@ -307,9 +309,11 @@ pub async fn get_llm_summary(
     );
     let ttl = config.ttl.warm_minutes;
 
-    // Check cache first.
-    if let Some(cached) = get_cached_summary(&state.db, &cache_key, ttl) {
-        return Ok(Some(cached));
+    // Check cache first, unless the user explicitly asked to regenerate.
+    if !force.unwrap_or(false) {
+        if let Some(cached) = get_cached_summary(&state.db, &cache_key, ttl) {
+            return Ok(Some(cached));
+        }
     }
 
     // Fetch activities for the range.

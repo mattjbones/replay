@@ -287,7 +287,10 @@ impl RecapServer {
         // Only throw away cached LLM summaries if a source actually advanced;
         // run_once itself skips sources whose data is still within the hot TTL.
         if after > before {
-            recap_core::db::invalidate_all_summaries(&self.db);
+            recap_core::db::invalidate_summaries_older_than(
+                &self.db,
+                self.config.ttl.summary_refresh_minutes,
+            );
             Ok(CallToolResult::success(vec![Content::text("sync complete: new data fetched")]))
         } else {
             Ok(CallToolResult::success(vec![Content::text(

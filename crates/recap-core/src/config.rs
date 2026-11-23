@@ -153,6 +153,9 @@ pub struct TtlConfig {
     pub warm_minutes: i64,
     #[serde(default = "default_cold_minutes")]
     pub cold_minutes: i64,
+    /// Minimum age before new synced data can discard a cached AI summary.
+    #[serde(default = "default_summary_refresh_minutes")]
+    pub summary_refresh_minutes: i64,
 }
 
 impl Default for TtlConfig {
@@ -161,6 +164,7 @@ impl Default for TtlConfig {
             hot_minutes: default_hot_minutes(),
             warm_minutes: default_warm_minutes(),
             cold_minutes: default_cold_minutes(),
+            summary_refresh_minutes: default_summary_refresh_minutes(),
         }
     }
 }
@@ -175,6 +179,10 @@ fn default_warm_minutes() -> i64 {
 
 fn default_cold_minutes() -> i64 {
     1440
+}
+
+fn default_summary_refresh_minutes() -> i64 {
+    15
 }
 
 // ---------------------------------------------------------------------------

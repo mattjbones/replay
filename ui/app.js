@@ -863,7 +863,7 @@ function bindEvents() {
   dom.briefingRefresh.addEventListener("click", () => {
     const key = briefingCacheKey();
     delete state.llmCache[key];
-    fetchBriefing();
+    fetchBriefing({ force: true });
   });
 
   // Action bar: standup
@@ -2164,18 +2164,30 @@ function renderStatCards(stats) {
  * Quiet fetches (background sync) keep the current briefing on screen while the
  * new one generates, and leave it in place if generation fails.
  */
-async function fetchBriefing({ quiet = false } = {}) {
+/** In-flight briefing requests by cache key, so overlapping callers share one LLM call. */
+const briefingRequests = new Map();
+
+async function fetchBriefing({ quiet = false, force = false } = {}) {
   const key = briefingCacheKey();
 
-  if (state.llmCache[key] !== undefined) {
+  if (!force && state.llmCache[key] !== undefined) {
     renderBriefing(state.llmCache[key]);
     return;
   }
 
   if (!quiet) dom.briefingContent.innerHTML = loadingDotsHtml();
 
+  let request = briefingRequests.get(key);
+  if (!request || force) {
+    request = invoke("get_llm_summary", { ...invokeArgs(), force });
+    briefingRequests.set(key, request);
+    request.finally(() => {
+      if (briefingRequests.get(key) === request) briefingRequests.delete(key);
+    }).catch(() => {});
+  }
+
   try {
-    const summary = await invoke("get_llm_summary", invokeArgs());
+    const summary = await request;
     state.llmCache[key] = summary;
     // The user may have moved to another period while this was generating
     if (briefingCacheKey() !== key) return;
@@ -2789,9 +2801,8 @@ async function handleSync() {
     state.standupCache = {};
     state.briefingText = null;
     await refreshAuthStatus();
+    // loadDashboard regenerates the briefing with the fresh data
     await loadDashboard();
-    // Retrigger briefing / summary generation with fresh data
-    fetchBriefing();
   } catch (err) {
     showToast(`Sync failed: ${err}`, "error");
   } finally {
