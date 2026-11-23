@@ -744,9 +744,37 @@ pub struct ProjectPrediction {
 pub struct ProductivityData {
     pub weeks: Vec<String>,
     pub scores: Vec<f64>,
+    /// Score for the last 7 days (rolling, so it's comparable to a full week).
     pub current_score: f64,
+    /// Score for the 7 days before that.
+    pub previous_score: f64,
     pub trend: String,  // "improving", "declining", "stable"
+    /// Average over complete weeks only.
     pub baseline_avg: f64,
+    /// The current week's label when its weekly totals are partial.
+    pub partial_week: Option<String>,
+    /// Days of `partial_week` elapsed so far (1 = Monday).
+    pub partial_week_days: u32,
+}
+
+/// If the last label in `weeks` is the current (UTC, Monday-start `%Y-W%W`)
+/// week, returns its index and how many days of it have elapsed (1 = Monday).
+/// Weekly totals for that week are partial and must not be compared to full weeks.
+pub fn in_progress_week(weeks: &[String], now: chrono::DateTime<Utc>) -> Option<(usize, u32)> {
+    let current = now.format("%Y-W%W").to_string();
+    let idx = weeks.len().checked_sub(1)?;
+    (weeks[idx] == current).then(|| (idx, now.weekday().num_days_from_monday() + 1))
+}
+
+/// Weighted activity score over daily `(YYYY-MM-DD, kind, count)` rows for days
+/// in `[from, to)`. Kinds without a weight contribute nothing.
+pub fn score_days(rows: &[(String, String, i64)], from: &str, to: &str, weights: &[(&str, f64)]) -> f64 {
+    rows.iter()
+        .filter(|(day, _, _)| day.as_str() >= from && day.as_str() < to)
+        .map(|(_, kind, cnt)| {
+            weights.iter().find(|(k, _)| k == kind).map_or(0.0, |(_, w)| *cnt as f64 * w)
+        })
+        .sum()
 }
 
 /// If `weeks` has fewer than 12 entries, prepend one zero-data week before the
@@ -1105,9 +1133,14 @@ pub async fn get_trends_data(
     }
     // The padded week has no matching rows so its sum is already 0 — no extra fixup needed.
 
+    // The current week is still running: its totals are partial, so leave it out of
+    // anything that compares weeks (trend, anomalies, forecast, baseline).
+    let partial = in_progress_week(&week_set, now);
+    let complete_len = partial.map_or(week_set.len(), |(idx, _)| idx);
+
     let mut trend_slopes: HashMap<String, f64> = HashMap::new();
     for (kind, values) in &vel_series {
-        let (slope, _) = linear_regression(values);
+        let (slope, _) = linear_regression(&values[..complete_len]);
         trend_slopes.insert(kind.clone(), slope);
     }
 
@@ -1133,7 +1166,7 @@ pub async fn get_trends_data(
     let mut anomalies: Vec<AnomalyWeek> = Vec::new();
     for kind in &key_kinds {
         if let Some(values) = vel_series.get(*kind) {
-            for (idx, z) in detect_anomalies(values, 1.5) {
+            for (idx, z) in detect_anomalies(&values[..complete_len], 1.5) {
                 if idx < week_set.len() {
                     anomalies.push(AnomalyWeek {
                         week: week_set[idx].clone(),
@@ -1216,7 +1249,7 @@ pub async fn get_trends_data(
     }
     for kind in &key_kinds {
         if let Some(values) = vel_series.get(*kind) {
-            let fc = holt_winters_forecast(values, n_ahead, 0.3, 0.1);
+            let fc = holt_winters_forecast(&values[..complete_len], n_ahead, 0.3, 0.1);
             forecasts.insert(kind.to_string(), fc.iter().map(|v| (v * 10.0).round() / 10.0).collect());
         }
     }
@@ -1305,10 +1338,14 @@ pub async fn get_trends_data(
         }).sum()
     }).collect();
 
-    let baseline_avg = if weekly_scores.is_empty() { 0.0 }
-        else { weekly_scores.iter().sum::<f64>() / weekly_scores.len() as f64 };
-    let current_score = weekly_scores.last().copied().unwrap_or(0.0);
-    let (score_slope, _) = linear_regression(&weekly_scores);
+    let complete_scores = &weekly_scores[..complete_len.min(weekly_scores.len())];
+    let baseline_avg = if complete_scores.is_empty() { 0.0 }
+        else { complete_scores.iter().sum::<f64>() / complete_scores.len() as f64 };
+    // Rolling 7-day windows (today inclusive) compare like-for-like with full weeks.
+    let day = |offset: i64| (now - chrono::Duration::days(offset)).format("%Y-%m-%d").to_string();
+    let current_score = score_days(&daily_rows, &day(6), &day(-1), weights);
+    let previous_score = score_days(&daily_rows, &day(13), &day(6), weights);
+    let (score_slope, _) = linear_regression(complete_scores);
     let prod_trend = if score_slope > 0.5 { "improving" }
         else if score_slope < -0.5 { "declining" }
         else { "stable" };
@@ -1317,8 +1354,11 @@ pub async fn get_trends_data(
         weeks: week_set.clone(),
         scores: weekly_scores.iter().map(|s| (s * 10.0).round() / 10.0).collect(),
         current_score: (current_score * 10.0).round() / 10.0,
+        previous_score: (previous_score * 10.0).round() / 10.0,
         trend: prod_trend.to_string(),
         baseline_avg: (baseline_avg * 10.0).round() / 10.0,
+        partial_week: partial.map(|(idx, _)| week_set[idx].clone()),
+        partial_week_days: partial.map_or(0, |(_, d)| d),
     };
 
     // --- Burnout ---
