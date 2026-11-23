@@ -60,6 +60,22 @@ pub fn invalidate_all_summaries(db: &Database) {
     }
 }
 
+/// Delete cached LLM summaries older than `min_age_minutes`, keeping recent ones.
+///
+/// Used after a sync brings in new data: syncs can land every few minutes (the
+/// scheduler, manual Sync, MCP clients), and regenerating on each would mean an
+/// LLM call per sync. Summaries younger than the floor survive until they age out.
+pub fn invalidate_summaries_older_than(db: &Database, min_age_minutes: i64) {
+    let conn = db.conn.lock().unwrap();
+    let cutoff = (Utc::now() - Duration::minutes(min_age_minutes)).to_rfc3339();
+    let deleted = conn
+        .execute("DELETE FROM llm_cache WHERE created_at <= ?1", params![cutoff])
+        .unwrap_or(0);
+    if deleted > 0 {
+        tracing::info!("invalidated {deleted} cached LLM summaries older than {min_age_minutes}m");
+    }
+}
+
 /// Delete all expired llm_cache entries older than `ttl_minutes`.
 pub fn cleanup_expired_cache(db: &Database, ttl_minutes: i64) {
     let conn = db.conn.lock().unwrap();
