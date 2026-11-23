@@ -782,6 +782,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   updateProfileModeUI();
   await loadDashboard();
   pollBackfill();
+  startBackgroundSyncPolling();
 
   // Check for updates after UI is loaded
   setTimeout(checkForUpdates, 5000);
@@ -1247,6 +1248,47 @@ async function ensurePeriodFetched() {
     state.refreshingPeriod = false;
     renderRefreshIndicator();
   }
+}
+
+const SYNC_POLL_MS = 60_000;
+
+/** Newest `at` across sources, or null when nothing has synced yet. */
+function latestSyncAt(rows) {
+  return rows.reduce((max, r) => (r.at && (!max || r.at > max) ? r.at : max), null);
+}
+
+/**
+ * The scheduler syncs in the background on `schedule.sync_interval_minutes`.
+ * Poll its status and, when a new pass has landed, redraw quietly and
+ * regenerate the briefing (the backend summary TTL caps how often the LLM runs).
+ */
+async function checkForBackgroundSync() {
+  if (document.hidden || dom.syncBtn.disabled) return;
+  let rows;
+  try {
+    rows = await invoke('get_sync_status');
+  } catch {
+    return;
+  }
+  const latest = latestSyncAt(rows);
+  const prev = state.lastSeenSyncAt;
+  state.lastSeenSyncAt = latest;
+  state.syncStatus = Object.fromEntries(rows.map(r => [r.source, r]));
+  if (!prev || !latest || latest === prev) return;
+
+  state.llmCache = {};
+  state.standupCache = {};
+  await loadDashboard({ quiet: true });
+  if (state.digest?.activities?.length) fetchBriefing({ quiet: true });
+}
+
+function startBackgroundSyncPolling() {
+  if (state.syncPollTimer) return;
+  checkForBackgroundSync();
+  state.syncPollTimer = setInterval(checkForBackgroundSync, SYNC_POLL_MS);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkForBackgroundSync();
+  });
 }
 
 /** Track the background backfill, redrawing quietly as each week lands. */
@@ -2118,7 +2160,11 @@ function renderStatCards(stats) {
 
 // ===== Daily Briefing (LLM) =====
 
-async function fetchBriefing() {
+/**
+ * Quiet fetches (background sync) keep the current briefing on screen while the
+ * new one generates, and leave it in place if generation fails.
+ */
+async function fetchBriefing({ quiet = false } = {}) {
   const key = briefingCacheKey();
 
   if (state.llmCache[key] !== undefined) {
@@ -2126,16 +2172,17 @@ async function fetchBriefing() {
     return;
   }
 
-  // Loading dots
-  dom.briefingContent.innerHTML = loadingDotsHtml();
+  if (!quiet) dom.briefingContent.innerHTML = loadingDotsHtml();
 
   try {
     const summary = await invoke("get_llm_summary", invokeArgs());
     state.llmCache[key] = summary;
+    // The user may have moved to another period while this was generating
+    if (briefingCacheKey() !== key) return;
     state.briefingText = summary;
     renderBriefing(summary);
   } catch {
-    renderBriefing(null);
+    if (!quiet && briefingCacheKey() === key) renderBriefing(null);
   }
 }
 
@@ -2728,6 +2775,8 @@ async function handleSync() {
     state.lastSyncTime = new Date();
     updateSyncTooltip();
     await refreshSyncStatus();
+    // Don't let the background poller treat this manual pass as new
+    state.lastSeenSyncAt = latestSyncAt(Object.values(state.syncStatus || {}));
     const failed = Object.values(state.syncStatus || {}).filter(s => !s.ok);
     if (failed.length) {
       const names = failed.map(s => SOURCE_META[s.source]?.label || s.source).join(", ");
